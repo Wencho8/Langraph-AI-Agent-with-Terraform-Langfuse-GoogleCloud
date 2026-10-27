@@ -1,0 +1,45 @@
+name: agent-chatbot-gcloud
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chatbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-chatbot-password}
+      POSTGRES_DB: ${POSTGRES_DB:-chatbot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatbot}:${POSTGRES_PASSWORD:-local-chatbot-password}@db:5432/${POSTGRES_DB:-chatbot}
+      APP_ENV: ${APP_ENV:-local}
+      DEV_IDENTITY_ENABLED: ${DEV_IDENTITY_ENABLED:-false}
+      MAX_ACTIVE_TURNS: ${MAX_ACTIVE_TURNS:-4}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-20}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      TURN_TIMEOUT_SECONDS: ${TURN_TIMEOUT_SECONDS:-30}
+      MODEL_TIMEOUT_SECONDS: ${MODEL_TIMEOUT_SECONDS:-20}
+      SIMULATED_CHUNK_DELAY_SECONDS: ${SIMULATED_CHUNK_DELAY_SECONDS:-0.04}
+      MAX_MODEL_CALLS: ${MAX_MODEL_CALLS:-1}
+      GRAPH_RECURSION_LIMIT: ${GRAPH_RECURSION_LIMIT:-4}
+    ports:
+      - "127.0.0.1:${API_PORT:-8088}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=3)"]
+      interval: 3s
+      timeout: 4s
+      retries: 15
+      start_period: 5s
+
+volumes:
+  postgres_data:
