@@ -5,6 +5,12 @@ from uuid import UUID
 
 
 @dataclass(frozen=True)
+class UserProfile:
+    id: UUID
+    display_name: str | None = None
+
+
+@dataclass(frozen=True)
 class Message:
     id: UUID
     turn_id: UUID

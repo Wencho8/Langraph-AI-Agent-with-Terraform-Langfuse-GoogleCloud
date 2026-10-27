@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from uuid import UUID
 
@@ -13,12 +14,14 @@ class PostgresLease:
         self.key = key
         self.backend_pid = backend_pid
         self.released = False
+        self.operation = asyncio.Lock()
 
     async def check(self):
         try:
             if self.connection.closed or self.connection.invalidated:
                 raise Unavailable()
-            pid = await self.connection.scalar(text("SELECT pg_backend_pid()"))
+            async with self.operation:
+                pid = await self.connection.scalar(text("SELECT pg_backend_pid()"))
             if pid != self.backend_pid:
                 raise Unavailable()
         except Exception as exc:

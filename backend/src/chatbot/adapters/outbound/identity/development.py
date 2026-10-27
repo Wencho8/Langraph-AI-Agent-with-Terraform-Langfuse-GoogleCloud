@@ -2,6 +2,7 @@ from uuid import UUID
 
 from chatbot.application.ports import ConversationRepository
 from chatbot.domain.errors import UnknownUser
+from chatbot.domain.models import UserProfile
 
 DEVELOPMENT_USERS = {
     "alice": UUID("11111111-1111-4111-8111-111111111111"),
@@ -12,14 +13,15 @@ DEVELOPMENT_USERS = {
 class DevelopmentIdentity:
     def __init__(self, repository: ConversationRepository, *, enabled: bool, environment: str):
         if not enabled or environment not in {"local", "test"}:
-            raise ValueError("Iteration 01 requires explicitly enabled local/test development identity")
+            raise ValueError("Explicitly enabled local/test development identity is required")
         self.repository = repository
 
-    async def resolve(self, credential: str | None) -> UUID:
+    async def resolve(self, credential: str | None) -> UserProfile:
         try:
             user_id = DEVELOPMENT_USERS[credential] if credential in DEVELOPMENT_USERS else UUID(credential or "")
         except (ValueError, TypeError):
             raise UnknownUser() from None
-        if not await self.repository.user_exists(user_id):
+        user = await self.repository.profile(user_id)
+        if user is None:
             raise UnknownUser()
-        return user_id
+        return user

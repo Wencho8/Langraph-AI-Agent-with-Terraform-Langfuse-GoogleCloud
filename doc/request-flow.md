@@ -2,7 +2,7 @@
 
 ## Startup
 
-Uvicorn runs **one worker process with one main event loop**. At startup, `app.py` builds the repository, identity adapter, agent, rate limiter, and orchestrator.
+Uvicorn runs **one worker process with one main event loop**. At startup, `app.py` builds the repository, identity adapter, model client, agent, rate limiter, and orchestrator, and loads the static finance prompt.
 
 These objects are reused across requests through `app.state`; a new orchestrator is not created for every message. Each turn has its own execution object, messages, and state.
 
@@ -14,14 +14,17 @@ POST /v1/chat/messages
   -> shared orchestrator checks rate limits and available capacity
   -> lock adapter acquires the user's conversation lock in PostgreSQL
   -> repository creates the turn, saves the user message, and loads all history
-  -> agent receives that history and produces response chunks
+  -> agent receives the user's name, full history, and finance instructions
+  -> model adapter calls OpenAI or the local simulator and streams response chunks
   -> HTTP adapter sends those chunks as SSE events
-  -> repository saves the final assistant message and completes the turn
+  -> repository saves the final assistant message, transcript, and metrics in one transaction
   -> HTTP adapter sends the completed event
   -> execution cleanup releases the lock and the capacity slot
 ```
 
-The current agent uses a simulated model. The local identity header selects a fixture user; it is not real authentication.
+`MODEL` selects `simulated` (default, no key) or `openai:<model-id>`. The model client is reused; each call has separate inputs. The local identity header selects a fixture user; it is not real authentication.
+
+The tool registry is empty. The graph is ready to execute registered tools and call the model again within the same turn, under separate call limits and one shared deadline. The HTTP route and orchestrator keep the same flow.
 
 `GET /v1/chat/messages` resolves the current user and calls the orchestrator/repository to read their history. It does not run the agent.
 

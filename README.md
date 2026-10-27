@@ -1,6 +1,6 @@
 # Agent Chatbot on Google Cloud
 
-A small learning project: FastAPI, PostgreSQL/Alembic, ports and adapters, and an async LangGraph. The current iteration runs locally with a **simulated model**. It has no frontend, real authentication, real LLM calls, or cloud resources yet.
+A small learning project: FastAPI, PostgreSQL/Alembic, ports and adapters, and an async LangGraph. The local backend supports a simulated model and **OpenAI Responses** with a finance-focused XML prompt. Frontend, real authentication, and cloud resources come later.
 
 ## Start locally
 
@@ -49,6 +49,37 @@ Events: `started`, one or more `delta` events, then `completed` after the final 
 
 Use `GET /v1/chat/messages` with the same header for history. The payload cannot select someone else's conversation. Each user has one conversation, and every saved message is passed to the graph on subsequent turns.
 
+## Use OpenAI
+
+The default provider is `simulated`: no key or model spending is needed. This mode checks streaming/history; it does not enforce the finance prompt semantically.
+
+When ready, edit the **untracked** `.env` locally:
+
+```dotenv
+MODEL=openai:gpt-6.1-terra
+OPENAI_API_KEY=your-key-here
+MODEL_MAX_OUTPUT_TOKENS=2048
+```
+
+Run `make start` to apply the configuration, then try:
+
+```sh
+make chat MESSAGE='How can I build an emergency fund?'
+make chat MESSAGE='What is my name?'
+make chat MESSAGE='Who won the football match?'
+make chat MESSAGE='Help me budget for football tickets'
+make chat DEV_USER=bob MESSAGE='Hello! What is my name?'
+make history
+```
+
+`MODEL` selects both provider and model: `simulated` for offline development or `openai:<model-id>` for a model available to your API project. The shorthand `MODEL=openai` selects `openai:gpt-6.1-terra`. Other non-empty model IDs are accepted without a code change; unsupported providers or empty IDs fail configuration validation. There is no automatic fallback after a provider error. Missing keys fail startup; model access, quotas, and prompt behavior are checked only when you send a real message. Startup, readiness, and `make test` make **no paid model requests**.
+
+`MODEL` and `MODEL_MAX_OUTPUT_TOKENS` are normal configuration. Only `OPENAI_API_KEY` is a secret. Apply `.env` changes with `make start`.
+
+The XML lives in `backend/src/chatbot/prompts/finance.xml`. It is loaded from the installed package and validated at startup. Instructions are sent separately from the user's name and conversation. Alice/Bob names come from PostgreSQL; no financial profile or memory is inferred. The normal tool registry is empty, and OpenAI receives no tool definitions or hosted tools.
+
+`completed` includes provider/model, the prompt hash, actual call counts, and reported token usage. Missing usage stays unknown. A provider error after streaming starts is an SSE `error`, even if earlier deltas were shown. Partial answers never enter canonical assistant history.
+
 ## Local identity
 
 `X-Dev-User-Id` accepts `alice`, `bob`, or a seeded user's UUID:
@@ -65,17 +96,21 @@ backend/src/chatbot/
 ├── app.py                       # Composition and resource lifecycle
 ├── config.py                    # Validated environment configuration
 ├── domain/                      # Plain messages, turns, events, errors
-├── application/                 # Ports and turn orchestration
+├── application/                 # Ports, turn orchestration, tool registry
+├── prompts/                     # Packaged finance.xml and validation/loader
 └── adapters/
     ├── inbound/http/            # Routes, API schemas, SSE framing
     └── outbound/
         ├── postgres/            # Tables, repository, locks, local seed
-        ├── agent/               # LangGraph and async simulated model
+        ├── agent/               # Async LangGraph model/tools loop
+        ├── models/              # OpenAI, simulated model, provider factory
         ├── identity/            # Local principal resolution
         └── rate_limit/          # Local rolling-window limiter
 ```
 
-`app.py` connects implementations. The orchestrator consumes ports and never imports FastAPI, SQLAlchemy, or LangGraph. The compiled graph is shared, but invocation state is isolated. Its current shape is `START -> model -> END` with native async incremental output; tools are deferred.
+`app.py` connects implementations and closes the shared async model client at shutdown. The orchestrator consumes ports and never imports FastAPI, SQLAlchemy, or LangGraph. The compiled graph is shared, but invocation state is isolated. Its shape is `START -> model -> END`, with a conditional `model -> tools -> model` loop ready for future tools. Tools execute sequentially after name/schema validation; test handlers exist only in tests.
+
+One OpenAI adapter call performs one Responses request. LangGraph owns repeated model/tool rounds. Successful turns preserve an ordered provider transcript alongside canonical user/assistant text, including tool IDs and opaque continuation items. Loading history replays those items as model context without executing historical handlers or duplicating assistant text. Requests send full history with `store=false` and no provider-side conversation ID. This setting does not describe all provider retention policies.
 
 Alembic migrations live in `backend/migrations/`. Python 3.13 dependencies are managed by uv and pinned in `backend/uv.lock`. To update dependencies intentionally, run `uv lock` from `backend/` and rebuild. Tests are included in this development image; a cloud production image will be addressed later.
 
@@ -85,13 +120,17 @@ Alembic migrations live in `backend/migrations/`. Python 3.13 dependencies are m
 - PostgreSQL advisory locks are keyed by user so even overlapping first messages are protected. A busy conversation receives HTTP 409. Dedicated lock connections remain outside long-running database transactions.
 - The lock is checked during generation, and graph tasks are cancelled before releasing it. A lost database connection aborts the execution when detected; detection is not instantaneous, so future tools with side effects will need their own idempotency/fencing design.
 - Local rate limit: 20 submissions per user per rolling minute, including rejected busy/saturated submissions. It resets on restart and must become shared before cloud deployment.
-- Total turn timeout: 30 seconds. Model timeout: 20 seconds. One model call and graph recursion limit four. Values are configurable; history is never silently truncated.
+- Defaults: total turn deadline 30 seconds, each model request 20 seconds, each future tool 5 seconds, at most 4 model calls, 8 tool calls, and graph recursion limit 12. Each OpenAI response allows at most 2048 output tokens, including reasoning tokens where applicable. SDK retries are disabled. Values are configurable; history is never silently truncated.
+- Existing `.env` files are preserved by `make start`. If yours came from iteration 01, update `MAX_MODEL_CALLS=4` and `GRAPH_RECURSION_LIMIT=12` to adopt the new defaults. Smaller old limits still allow the normal one-model/no-tools flow.
 - Complete assistant messages are persisted; partial streamed chunks are not. The user message and failed/cancelled turn remain recorded.
 - A hard process crash can leave an `in_progress` record; automatic recovery and idempotent request retries are deferred. Retrying a message can create another turn.
-- Logs include safe execution identifiers, status, timings, and call counts. Simulated token usage is reported as unavailable, not fabricated.
+- Logs include safe execution identifiers, provider/model, status, timings, call counts, request IDs, and actual token usage where reported. Prompts, profile names, tool payloads, API keys, and opaque reasoning items are not logged. Simulated usage is unavailable.
 - Tests create/drop uniquely named databases in the **same PostgreSQL container**, with Alembic migrations. They do not truncate local chat data or create test containers. The local PostgreSQL role has the database-creation permission needed by these tests.
+- Provider tests run the real async OpenAI SDK over mocked HTTP/SSE streams. They verify protocol handling, failures, cancellation, and continuation; they do not prove live model availability or finance-scope compliance.
 
 ## Specifications
 
 - [Project definitions](doc/definitions.md)
 - [Iteration 01](specs/01-initial-backend-setup.md)
+- [Iteration 02](specs/02-openai-finance-agent.md)
+- [Short request/concurrency flow](doc/request-flow.md)

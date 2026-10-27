@@ -1,6 +1,6 @@
 # Iteration 02 — OpenAI Finance Agent
 
-Status: specified; implementation has not started. This change is documentation only.
+Status: implemented locally. Offline verification uses the real SDK with mocked HTTP/SSE, synthetic tools, and the existing PostgreSQL service. Live OpenAI access and finance behavior remain pending the user's API key.
 
 Project decisions: [Definitions](../doc/definitions.md). Baseline: [Iteration 01](01-initial-backend-setup.md).
 
@@ -37,8 +37,8 @@ HTTP route
 ## OpenAI integration
 
 - Use the official `openai` Python package, `AsyncOpenAI`, and the Responses API with streaming.
-- Use `gpt-6.1-terra` as the configured default for `OPENAI_MODEL`. Allow an explicit override such as `gpt-6.1-sol` or a supported model snapshot. Keep the default in settings, not embedded in graph or provider request code. Never silently switch models after a provider failure.
-- Validate `MODEL_PROVIDER` as the closed choice `simulated` or `openai`. Validate `OPENAI_MODEL` as a trimmed, non-empty string rather than a closed model enum, so changing models or snapshots does not require a code change. Only the API key is additionally required when OpenAI is selected; actual model access is determined by the provider on an explicit real request.
+- Use one provider-independent `MODEL` setting: `simulated` by default, or `openai:<model-id>` for real requests. The shorthand `MODEL=openai` selects `openai:gpt-6.1-terra`. Allow explicit overrides such as `openai:gpt-6.1-sol` or a supported model snapshot. Keep the default in settings, not embedded in graph or provider request code. Never silently switch models after a provider failure.
+- Validate the provider against the supported adapters and trim/require a non-empty model ID after the colon. Do not use a closed model enum, so changing models or snapshots does not require a code change. Only the API key is additionally required when OpenAI is selected; actual model access is determined by the provider on an explicit real request. Model choice and output limits are normal configuration, separate from credentials.
 - Fail startup clearly for missing configuration. Do not make paid model calls to validate startup or readiness.
 - Keep PostgreSQL as conversation storage. Send the complete required history explicitly, with `store=false`; do not use OpenAI Conversations or shared `previous_response_id` state. This setting is not a claim about all provider retention policies.
 - Include application instructions in every model request, including tool continuations. Keep user/assistant content in its original role.
@@ -106,9 +106,8 @@ Use validated settings and expose relevant values through Compose and `.env.exam
 
 | Setting | Initial value or rule |
 | --- | --- |
-| `MODEL_PROVIDER` | `simulated` by default; `openai` selects the real integration. |
+| `MODEL` | `simulated` by default; `openai:<model-id>` selects the real integration. `openai` alone selects `openai:gpt-6.1-terra`. No closed model enum. |
 | `OPENAI_API_KEY` | Required only for OpenAI; untracked `.env` locally; never logged or baked into the image. |
-| `OPENAI_MODEL` | Defaults to `gpt-6.1-terra` for OpenAI. Override with a non-empty model ID, for example `gpt-6.1-sol`; no closed model enum. |
 | `MAX_ACTIVE_TURNS` | Keep `4` per worker process. |
 | `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | Keep `20` submissions per user per rolling `60` seconds, including rejected submissions as in iteration 01. |
 | `TURN_TIMEOUT_SECONDS` | Keep `30`; one deadline from admission through generation and final persistence, never reset between graph rounds. |
@@ -117,7 +116,7 @@ Use validated settings and expose relevant values through Compose and `.env.exam
 | `MAX_MODEL_CALLS` | `4` per turn; an empty registry normally needs one. |
 | `MAX_TOOL_CALLS` | `8` per turn; actual count remains zero with the runtime registry empty. |
 | `GRAPH_RECURSION_LIMIT` | `12`; a graph runtime bound separate from model/tool counts. |
-| `OPENAI_MAX_OUTPUT_TOKENS` | `2048` per model response; preserve provider semantics, including reasoning-token consumption where applicable. Treat an exhausted/incomplete output as a bounded failure. |
+| `MODEL_MAX_OUTPUT_TOKENS` | `2048` per model response; the selected adapter translates this setting to its provider. Preserve provider semantics, including reasoning-token consumption where applicable. Treat an exhausted/incomplete output as a bounded failure. |
 
 These are configurable starting limits, not capacity or cost guarantees. Keep all saved history; do not truncate it to fit the provider. Surface a context-limit error clearly instead. Do not validate model access, account credits, or provider quotas through paid startup requests; surface provider rejections when the user explicitly makes a real request.
 
@@ -182,7 +181,9 @@ Use the existing test arrangement: focused pytest checks and isolated databases 
 
 ## Completion and references
 
-The implementation is complete when the local workflow and focused tests pass and the optional real-provider check is reported separately if run. This specification alone does not start implementation or authorize model spending.
+The local workflow and focused tests cover migration from iteration 01, provider streaming/errors, transcript replay, multiple/repeated tool calls, limits, configuration, and cancellation. The normal application registers no tools. No real OpenAI request has been made; the user will review live model access, streaming, finance scope, name context, and history after configuring their key.
+
+Review instructions and configuration examples are in [README](../README.md). No later iteration or model spending starts automatically.
 
 Primary API references:
 

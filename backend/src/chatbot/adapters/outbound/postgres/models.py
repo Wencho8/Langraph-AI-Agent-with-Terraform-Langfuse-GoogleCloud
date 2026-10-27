@@ -3,6 +3,8 @@ from uuid import UUID
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import text
 
 
 class Base(DeclarativeBase):
@@ -13,6 +15,7 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[UUID] = mapped_column(primary_key=True)
     external_auth_subject: Mapped[str | None] = mapped_column(String(255), unique=True)
+    display_name: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -37,6 +40,8 @@ class TurnRecord(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str | None] = mapped_column(String(64))
+    agent_transcript: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+    execution_metadata: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
 
 
 class MessageRecord(Base):

@@ -1,6 +1,6 @@
 # Agent Chatbot on Google Cloud — Definitions
 
-Status: evolving project decisions. Iteration 01 implements the first local backend.
+Status: evolving project decisions. Iterations 01–02 cover the local backend and OpenAI integration.
 
 ## Purpose
 
@@ -25,7 +25,7 @@ The chatbot's initial domain is personal finance and financial education. It sho
 | Backend | Python and FastAPI |
 | HTTP server | Uvicorn, initially with one worker process per container |
 | Agent execution | LangGraph |
-| First real model provider | OpenAI, using the user's available API credits; exact model remains to be selected |
+| First real model provider | OpenAI Responses via the async SDK; configurable model, initially `gpt-6.1-terra` |
 | Frontend | A minimal HTML, CSS, and JavaScript interface in this repository; no Vite |
 | Frontend hosting | Firebase Hosting |
 | Authentication | Firebase Authentication with email and password |
@@ -38,7 +38,7 @@ The chatbot's initial domain is personal finance and financial education. It sho
 | Runtime secrets | Google Cloud Secret Manager |
 | Backend tests | pytest, including support for async tests |
 
-Exact language versions, dependency versions, and frontend tooling beyond the minimal interface remain to be selected.
+The backend uses Python 3.13 with dependencies pinned in `backend/uv.lock`. Frontend implementation remains deferred.
 
 ## Environments and cost
 
@@ -64,6 +64,8 @@ The backend must verify the authentication token and derive the user identity fr
 
 ## Conversations and history
 
+- The implemented tables are `users`, `conversations`, `turns`, and `messages`. There is no separate `sessions` table. A conversation belongs to one user; it has many turns, and each turn has its user/final assistant messages.
+- `turns.agent_transcript` stores that turn's internal model/tool sequence for future context reconstruction. `turns.execution_metadata` stores that turn's provider/model, prompt revision, usage, timings, and call counts. Both belong to an individual execution; user and conversation records do not aggregate or overwrite them.
 - Maintain one persistent conversation per user.
 - Store user and assistant messages in PostgreSQL.
 - Load and send the entire stored conversation history to the model on each turn, together with the new message and system instructions.
@@ -91,9 +93,11 @@ Organize adapters by the direction in which the application is called or calls a
 ```text
 agent-chatbot-gcloud/
 ├── doc/
-│   └── definitions.md
+│   ├── definitions.md
+│   └── request-flow.md
 ├── specs/
-│   └── 01-initial-backend-setup.md
+│   ├── 01-initial-backend-setup.md
+│   └── 02-openai-finance-agent.md
 ├── backend/
 │   ├── pyproject.toml
 │   ├── Dockerfile
@@ -107,10 +111,15 @@ agent-chatbot-gcloud/
 │   │       ├── config.py
 │   │       ├── domain/
 │   │       │   ├── models.py
+│   │       │   ├── agent.py
 │   │       │   └── errors.py
 │   │       ├── application/
 │   │       │   ├── ports.py
+│   │       │   ├── tools.py
 │   │       │   └── orchestrator.py
+│   │       ├── prompts/
+│   │       │   ├── finance.xml
+│   │       │   └── loader.py
 │   │       └── adapters/
 │   │           ├── inbound/
 │   │           │   └── http/
@@ -124,8 +133,11 @@ agent-chatbot-gcloud/
 │   │               │   ├── repository.py
 │   │               │   └── locks.py
 │   │               ├── agent/
-│   │               │   ├── graph.py
-│   │               │   └── simulated_model.py
+│   │               │   └── graph.py
+│   │               ├── models/
+│   │               │   ├── factory.py
+│   │               │   ├── openai.py
+│   │               │   └── simulated.py
 │   │               ├── identity/
 │   │               │   └── development.py
 │   │               └── rate_limit/
@@ -153,7 +165,10 @@ This is a target layout, not an instruction to scaffold every file immediately. 
 | `adapters/inbound/http/schemas.py` | Pydantic request/response models for the HTTP contract. These are distinct from domain objects and database tables. |
 | `adapters/inbound/http/streaming.py` | Translate application response events into HTTP/SSE framing. The application does not construct FastAPI responses. |
 | `adapters/outbound/postgres/` | SQLAlchemy mappings, database connections, repository implementation, and the candidate PostgreSQL lock implementation. |
-| `adapters/outbound/agent/` | Implement the agent execution port with LangGraph and the initial simulated model. LangGraph is an outbound adapter because the application invokes it as a dependency, even though it runs inside the backend process. |
+| `adapters/outbound/agent/` | Implement the agent execution port with the async LangGraph model/tools loop. LangGraph is an outbound adapter because the application invokes it as a dependency, even though it runs inside the backend process. |
+| `adapters/outbound/models/` | Implement one model request through the OpenAI or simulated adapter; the factory selects the provider. |
+| `application/tools.py` | Allowlisted tool definitions, schema validation, and sequential async execution. The runtime registry is empty. |
+| `prompts/` | Packaged static finance XML, validation/loading, revision hash, and separate escaped name context. |
 | `adapters/outbound/identity/` | Resolve/verify identity through a replaceable implementation. The initial development adapter is local-only; Firebase verification can be added later. |
 | `adapters/outbound/rate_limit/` | Implement the rate-limit contract. The initial memory adapter is local-only. |
 | `migrations/` | Alembic environment and versioned database migrations. |
@@ -169,8 +184,8 @@ A future Valkey lock adapter belongs under `adapters/outbound/`, alongside Postg
 - A turn may finish without any tool call when the model can answer directly.
 - Keep graph execution state separate between requests and users.
 - Treat graph structure and conversation state as separate concerns. Different messages do not inherently require rebuilding the graph.
-- The graph construction and reuse strategy will be selected during implementation, based on isolation and concurrency requirements.
-- Select the model through an adapter and configuration. OpenAI is the first real provider for iteration 02, using the user's available API credits. Default to `gpt-6.1-terra` when OpenAI is selected; allow a different non-empty model identifier through `OPENAI_MODEL`, including `gpt-6.1-sol`. Keep the simulated provider available for local tests.
+- Compile one graph at startup and reuse it. Each invocation carries its own history, user profile, transcript, and counters; the shared client stores no current user context.
+- Select provider and model through a single `MODEL` setting: `simulated` or `openai:<model-id>`. OpenAI is the first real provider for iteration 02, using the user's available API credits. The shorthand `MODEL=openai` selects `openai:gpt-6.1-terra`; explicit identifiers such as `openai:gpt-6.1-sol` override it. Use `MODEL_MAX_OUTPUT_TOKENS` for the output limit. These settings are normal configuration; the API key is a separate provider-specific secret. Keep the simulated provider available for local tests.
 - Supporting a new provider may require another adapter and capability checks; do not assume every provider has identical tool-calling or streaming behavior.
 - Concrete tools, their permissions, and RAG data sources remain undefined.
 
@@ -185,10 +200,10 @@ A future Valkey lock adapter belongs under `adapters/outbound/`, alongside Postg
 
 ## Execution controls
 
-Include the following controls from the initial implementation; exact values and algorithms remain to be defined:
+Include the following controls from the initial implementation. Local defaults are four active turns, 20 submissions per user per rolling minute, a 30-second total deadline, 20 seconds per model request, 5 seconds per future tool, at most four model calls/eight tool calls, graph recursion limit 12, and 2048 output tokens per OpenAI response. Environment configuration can override these values.
 
 - **Conversation/session lock:** acquire a lock before starting a turn and hold it throughout response generation, any tool execution, streaming, and final persistence. Reject a second turn for the same session as busy while the lock is held. Different users may execute concurrently.
-- **Shared coordination:** do not rely solely on process-local locks for deployed correctness. PostgreSQL and Valkey are candidate shared locking backends; the choice remains open. A Valkey adapter may implement the session lock through the same port without changing the application orchestrator.
+- **Shared coordination:** the local implementation uses PostgreSQL session advisory locks on dedicated connections. A future Valkey adapter can implement the same port. Confirm the deployed choice before provisioning; process-local locks alone are insufficient.
 - **Safe lock lifecycle:** define acquisition, ownership, release, expiration or recovery, and behavior when lock storage is unavailable. Coordinate cancellation and lock release so a previous execution cannot continue concurrently with a new turn in the same conversation.
 - **Per-user rate limiting:** restrict message submission frequency independently of the conversation lock.
 - **Admission control:** bound the number of active executions admitted by the backend.
@@ -258,7 +273,7 @@ This is a tentative roadmap grouped by working outcomes. Refine each iteration b
 | Iteration | Scope | Working outcome |
 | --- | --- | --- |
 | 01 — Initial backend setup | FastAPI, PostgreSQL/Alembic, ports and adapters, simulated async agent, streaming, coordination, and Docker Compose. Implemented locally. | A tested local backend with persisted conversations. |
-| 02 — OpenAI finance agent and tool readiness | OpenAI provider adapter, configurable model, finance-focused instructions, real streaming and usage/timing logs, and a bounded model/tools execution path. Register no concrete tools yet. | Use `make chat` with a real finance-focused model and full history, with interfaces ready for future tools. |
+| 02 — OpenAI finance agent and tool readiness | OpenAI provider adapter, configurable model, finance-focused instructions, real streaming and usage/timing logs, and a bounded model/tools execution path. Register no concrete tools. | Local implementation; the user will perform the live provider check after adding an API key. |
 | 03 — Users and frontend | Firebase Authentication, registration/sign-in, and a minimal browser chat UI in the same repository. | Use the application from a browser with real user identity. |
 | 04 — Google Cloud with Terraform | Cloud Run, Cloud SQL, Firebase Hosting, Secret Manager, permissions, secure remote Terraform state, and an initial deployment. Replace local-only coordination where needed; configure resources, logs, spending alerts, and production settings. | A first production environment provisioned with Terraform, initially deployed manually. |
 | 05 — GitHub Actions | Pull-request checks, image builds, short-lived Google Cloud authentication, database migrations, and controlled deployments. | Deliver changes through a repeatable CI/CD pipeline. |
@@ -269,15 +284,14 @@ Tools do not require RAG. Iteration 02 prepares the graph and OpenAI integration
 
 ## Next decisions
 
-- Override the default OpenAI model through configuration when needed; the iteration 02 integration contract is specified below.
+- Verify live model access and finance behavior after adding the local OpenAI key; override the default model through configuration when needed.
 - Concrete tools and any RAG requirements.
 - Region and initial resource sizing.
-- Lock implementation, rate-limit algorithm, and numeric execution limits.
-- Streaming event contract and failure/persistence semantics.
-- Detailed schema, migrations, local authentication, and deployment workflow.
+- Deployed lock backend, shared rate limiter, and numeric limits after measurement.
+- Real authentication and deployment workflow.
 
 Keep project-wide decisions in this file. Describe the scope and acceptance criteria of each iteration in a separate document under `specs/`.
 
 The first iteration is defined in [Iteration 01 — Initial Backend Setup](../specs/01-initial-backend-setup.md).
 
-The second iteration is specified in [Iteration 02 — OpenAI Finance Agent](../specs/02-openai-finance-agent.md); implementation has not started.
+The second iteration is described in [Iteration 02 — OpenAI Finance Agent](../specs/02-openai-finance-agent.md). Its normal tests run offline; live provider checks are separate.
