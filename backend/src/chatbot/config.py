@@ -5,10 +5,42 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
+class DatabaseSettings(BaseSettings):
+    """Shared by the API and Alembic; migrations do not need auth/model settings."""
+
     model_config = SettingsConfigDict(extra="ignore", hide_input_in_errors=True)
 
-    database_url: str
+    database_mode: Literal["direct", "cloud_sql"] = "direct"
+    database_url: str | None = Field(default=None, repr=False)
+    database_pool_size: int = Field(default=6, ge=2, le=16)
+    database_connect_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    cloud_sql_instance: str | None = Field(default=None, pattern=r"^[^:\s]+:[^:\s]+:[^:\s]+$")
+    database_name: str | None = Field(default=None, min_length=1, max_length=63)
+    database_user: str | None = Field(default=None, min_length=1, max_length=63)
+
+    @model_validator(mode="after")
+    def validate_database(self):
+        if self.database_mode == "direct":
+            if not self.database_url or not self.database_url.startswith("postgresql+asyncpg://"):
+                raise ValueError("Direct database mode requires DATABASE_URL using postgresql+asyncpg://")
+        else:
+            if self.database_url:
+                raise ValueError("Do not set DATABASE_URL in cloud_sql mode; no direct fallback is allowed")
+            if not self.cloud_sql_instance or not self.database_name or not self.database_user:
+                raise ValueError("Cloud SQL mode requires CLOUD_SQL_INSTANCE, DATABASE_NAME and DATABASE_USER")
+            if self.database_name != self.database_name.strip() or not self.database_name.strip():
+                raise ValueError("DATABASE_NAME must not be blank or contain surrounding whitespace")
+            if self.database_user != self.database_user.strip() or not self.database_user.endswith(".iam"):
+                raise ValueError("DATABASE_USER must be the PostgreSQL IAM service-account username ending in .iam")
+        return self
+
+    @property
+    def sqlalchemy_url(self) -> str:
+        # Cloud connection parameters belong to async_creator, not a password URL.
+        return self.database_url if self.database_mode == "direct" else "postgresql+asyncpg://"
+
+
+class Settings(DatabaseSettings):
     app_env: Literal["local", "test", "production"] = "local"
     auth_mode: Literal["session", "development"] = "session"
     app_origin: str = "http://localhost:5173"
@@ -53,8 +85,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_runtime(self):
-        if not self.database_url.startswith("postgresql+asyncpg://"):
-            raise ValueError("DATABASE_URL must use postgresql+asyncpg://")
         if self.auth_mode == "development" and self.app_env not in {"local", "test"}:
             raise ValueError("Development identity is allowed only in local/test")
         origin = urlsplit(self.app_origin)

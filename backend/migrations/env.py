@@ -1,12 +1,11 @@
 import asyncio
-import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
-from sqlalchemy.ext.asyncio import create_async_engine
 
+from chatbot.adapters.outbound.postgres.connections import PostgresConnections
 from chatbot.adapters.outbound.postgres.models import Base
+from chatbot.config import DatabaseSettings
 
 config = context.config
 if config.config_file_name:
@@ -21,14 +20,24 @@ def run_migrations(connection):
 
 
 async def run_online():
-    engine = create_async_engine(os.environ["DATABASE_URL"], poolclass=pool.NullPool)
-    async with engine.connect() as connection:
-        await connection.run_sync(run_migrations)
-    await engine.dispose()
+    connections = await PostgresConnections.open(DatabaseSettings())
+    engine = None
+    try:
+        # A migration uses one connection, not the API or advisory-lock pools.
+        # DDL must not inherit the API's five-second statement timeout.
+        engine = connections.engine(statement_timeout_ms=None)
+        async with engine.connect() as connection:
+            await connection.run_sync(run_migrations)
+    finally:
+        try:
+            if engine is not None:
+                await engine.dispose()
+        finally:
+            await connections.close()
 
 
 if context.is_offline_mode():
-    context.configure(url=os.environ["DATABASE_URL"], target_metadata=target_metadata, literal_binds=True)
+    context.configure(url=DatabaseSettings().sqlalchemy_url, target_metadata=target_metadata, literal_binds=True)
     with context.begin_transaction():
         context.run_migrations()
 else:

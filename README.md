@@ -1,6 +1,6 @@
 # Agent Chatbot on Google Cloud
 
-A small learning project: FastAPI, PostgreSQL/Alembic, ports and adapters, async LangGraph, and a React + TypeScript + Vite + Tailwind chat UI. Username authentication uses Argon2id and revocable database sessions. Models can be simulated or OpenAI Responses. Cloud provisioning comes later.
+A small learning project: FastAPI, PostgreSQL/Alembic, ports and adapters, async LangGraph, and a React + TypeScript + Vite + Tailwind chat UI. Username authentication uses Argon2id and revocable database sessions. Models can be simulated or OpenAI Responses. Google Cloud infrastructure and deployment are being added in guided iteration 04.
 
 ## Start locally
 
@@ -37,6 +37,29 @@ If a local port is occupied, change `API_PORT` in `backend/.env` or `FRONTEND_PO
 | Model/database credentials | Ignored backend env file | Secret Manager/runtime configuration, never frontend files |
 
 Production configuration rejects an HTTP origin, insecure cookie, or development identity. Cloud resources and deployment configuration are not provisioned by this iteration.
+
+### PostgreSQL local and Cloud SQL connections
+
+Compose explicitly sets `DATABASE_MODE=direct` and supplies the URL of its local `db` service. Local startup, migrations, and tests do not discover Google credentials, even when your host terminal has personal or work ADC variables. Do not mount Google credential files into local Compose.
+
+The cloud connection adapter is prepared for the following **Cloud Run/job settings**, not for the local `.env`:
+
+```dotenv
+DATABASE_MODE=cloud_sql
+CLOUD_SQL_INSTANCE=wencho8-chatbot-prod:us-central1:chatbot-postgres
+DATABASE_NAME=chatbot
+DATABASE_USER=chatbot-runtime@wencho8-chatbot-prod.iam
+DATABASE_POOL_SIZE=6
+DATABASE_CONNECT_TIMEOUT_SECONDS=10
+```
+
+Do not also set `DATABASE_URL` in cloud mode. The Python connector uses the public-IP path, encrypted connections, and automatic IAM database authentication under the workload's attached service account; no database password or downloaded service-account key is required. The migration job will use `chatbot-migrations@wencho8-chatbot-prod.iam` instead. PostgreSQL IAM users and table/schema grants are separate from the connector's IAM permissions; database grants and the first cloud migration remain pending.
+
+The API creates one async connector on the current event loop, with lazy credential/certificate refresh for request-based Cloud Run. SQLAlchemy's ordinary and advisory-lock pools share it. At the defaults there are at most six ordinary connections plus four dedicated lock connections per process, with no overflow; deployment revisions can overlap and a migration job adds its own connection. Configure pool capacity with `DATABASE_POOL_SIZE`; lock capacity follows `MAX_ACTIVE_TURNS`. Shutdown disposes both pools before closing the connector. Cloud connection failures never fall back to local PostgreSQL.
+
+Initial cloud SQL permissions are configured separately through a personal IAM administrator, without setting a `postgres` password or giving the app administrative privileges. See the [passwordless PostgreSQL setup guide](doc/database-iam-setup.md). Its operator helper previews SQL by default and requires explicit `--apply` to connect; it is not part of API startup or automatic Terraform execution.
+
+Alembic uses the same connection factory with one non-pooled connection and no API five-second statement timeout. It reads only database settings, so it does not require an OpenAI key, model selection, or web session configuration. API startup does not run migrations. Local seeds refuse cloud mode. No new schema migration is needed for this connection-only change. By user decision, shared rate limits are deferred for the initial personal cloud trial; existing bounded memory limits reset on restart and are independent across overlapping deployment revisions. PostgreSQL conversation locks remain shared.
 
 ## Commands
 
@@ -105,7 +128,7 @@ The XML lives in `backend/src/chatbot/prompts/finance.xml`. It is loaded from th
 
 Normal mode is `AUTH_MODE=session`: Argon2id password verification, a 24-hour absolute session by default, and an opaque `__session` HttpOnly/SameSite cookie with only its verifier stored in PostgreSQL. Logout revokes that session on the server; other devices' sessions remain valid. Session validity is checked during generation on the existing 0.5-second watchdog with a bounded two-second database check. Detection includes scheduling/I/O delay; upstream cancellation is not instantaneous. Password work runs off the event loop with at most two admitted operations.
 
-Login is limited to 10 attempts per minute per IP and username; registration to 5 per minute per IP. Limits are process-local and reset on restart. The local frontend proxy shares one source IP, so those IP limits are shared by local browser clients. Forwarded IP headers are not trusted; configure trusted ingress and shared limits before cloud deployment. Recovery/MFA/password changes and automatic expired-session cleanup are deferred.
+Login is limited to 10 attempts per minute per IP and username; registration to 5 per minute per IP. Limits are process-local and reset on restart. The local frontend proxy shares one source IP, so those IP limits are shared by local browser clients. Forwarded IP headers are not trusted; proxy clients may also share an IP limit in the cloud. Review trusted forwarding during deployment. Shared limits are deferred for this personal trial. Recovery/MFA/password changes and automatic expired-session cleanup are deferred.
 
 For explicit local-only development, set `AUTH_MODE=development` in `backend/.env`, restart, then use `make chat/history DEV_USER=alice` or `bob`. The browser registration/chat flow requires session mode. `X-Dev-User-Id` accepts these optional fixtures or a known UUID:
 
@@ -146,7 +169,7 @@ Alembic migrations live in `backend/migrations/`, including `0003_auth_sessions`
 - Four active turns per process by default; additional submissions receive HTTP 503.
 - PostgreSQL advisory locks are keyed by user so even overlapping first messages are protected. A busy conversation receives HTTP 409. Dedicated lock connections remain outside long-running database transactions.
 - The lock is checked during generation, and graph tasks are cancelled before releasing it. A lost database connection aborts the execution when detected; detection is not instantaneous, so future tools with side effects will need their own idempotency/fencing design.
-- Local rate limit: 20 submissions per user per rolling minute, including rejected busy/saturated submissions. It resets on restart and must become shared before cloud deployment.
+- Rate limit: 20 submissions per user per rolling minute, including rejected busy/saturated submissions. It resets on restart and is independent across overlapping deployment revisions; shared enforcement is explicitly deferred for the personal cloud trial.
 - Defaults: total turn deadline 30 seconds, each model request 20 seconds, each future tool 5 seconds, at most 4 model calls, 8 tool calls, and graph recursion limit 12. Each OpenAI response allows at most 2048 output tokens, including reasoning tokens where applicable. SDK retries are disabled. Values are configurable; history is never silently truncated.
 - Existing component env files are preserved by `make start`. If your backend settings came from iteration 01, update `MAX_MODEL_CALLS=4` and `GRAPH_RECURSION_LIMIT=12` to adopt the newer defaults.
 - Complete assistant messages are persisted; partial streamed chunks are not. The user message and failed/cancelled turn remain recorded.
@@ -161,4 +184,6 @@ Alembic migrations live in `backend/migrations/`, including `0003_auth_sessions`
 - [Iteration 01](specs/01-initial-backend-setup.md)
 - [Iteration 02](specs/02-openai-finance-agent.md)
 - [Iteration 03](specs/03-users-and-chat-ui.md)
+- [Iteration 04 — Guided Google Cloud Backend Deployment (complete)](specs/04-guided-google-cloud-deployment.md)
+- [Iteration 05 — Firebase Hosting (planned)](specs/05-firebase-hosting.md)
 - [Short request/concurrency flow](doc/request-flow.md)

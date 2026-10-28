@@ -20,9 +20,9 @@ async def seed(database: Database):
 
 async def main():
     settings = Settings()
-    if settings.app_env not in {"local", "test"}:
-        raise RuntimeError("Development seed is local/test only")
-    database = Database(settings.database_url, settings.max_active_turns)
+    if settings.app_env not in {"local", "test"} or settings.database_mode != "direct":
+        raise RuntimeError("Development seed is local/test with a direct database only")
+    database = await Database.open(settings, settings.max_active_turns)
     try:
         await seed(database)
         for name, user_id in DEVELOPMENT_USERS.items():

@@ -32,7 +32,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        database = Database(settings.database_url, settings.max_active_turns)
+        database = await Database.open(settings, settings.max_active_turns)
         model = None
         try:
             prompt = load_prompt()

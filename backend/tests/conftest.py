@@ -14,6 +14,7 @@ from chatbot.adapters.outbound.postgres.seed import seed
 
 @pytest.fixture(autouse=True)
 def offline_defaults(monkeypatch):
+    monkeypatch.setenv("DATABASE_MODE", "direct")
     monkeypatch.setenv("MODEL", "simulated")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("LANGSMITH_TRACING", "false")

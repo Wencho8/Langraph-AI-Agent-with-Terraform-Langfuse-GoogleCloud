@@ -2,6 +2,8 @@
 
 Status: implemented and verified locally. Cloud deployment remains deferred.
 
+Later scope update: iteration 04 explicitly defers shared rate-limit storage for the personal one-worker/maximum-one-instance trial. Its accepted restart/revision-overlap limitations supersede this iteration's original requirement to make rate limits shared before cloud exposure. Conversation locks remain shared in PostgreSQL.
+
 Project decisions: [Definitions](../doc/definitions.md). Backend baseline: [Iteration 02](02-openai-finance-agent.md).
 
 ## Goal and scope

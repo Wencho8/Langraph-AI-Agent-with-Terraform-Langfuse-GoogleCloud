@@ -19,6 +19,9 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatbot}:${POSTGRES_PASSWORD:-local-chatbot-password}@db:5432/${POSTGRES_DB:-chatbot}
+      DATABASE_MODE: direct
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-6}
+      DATABASE_CONNECT_TIMEOUT_SECONDS: ${DATABASE_CONNECT_TIMEOUT_SECONDS:-10}
       APP_ENV: ${APP_ENV:-local}
       AUTH_MODE: ${AUTH_MODE:-session}
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:5173}

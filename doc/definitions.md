@@ -1,6 +1,6 @@
 # Agent Chatbot on Google Cloud — Definitions
 
-Status: evolving project decisions. Iterations 01–03 implement the local backend, OpenAI integration, username authentication, and React chat UI. Cloud deployment is deferred.
+Status: evolving project decisions. Iterations 01–03 implement the local backend, OpenAI integration, username authentication, and React chat UI. Iteration 04 is complete: the backend and PostgreSQL are deployed in Google Cloud and live/ready checks passed. Firebase Hosting is planned in iteration 05, GitHub Actions in 06, and staging in 07.
 
 ## Purpose
 
@@ -45,7 +45,9 @@ The backend uses Python 3.13 with dependencies pinned in `backend/uv.lock`. The 
 - Start with a single deployed environment named `production`.
 - Add `staging` later by reusing the same Terraform modules and application artifacts, with separate environment configuration, data, and secrets.
 - Configure the initial Cloud Run backend with a maximum of one instance and one Uvicorn worker per container.
-- Choose region, CPU, memory, Cloud Run request concurrency, and database sizing before provisioning.
+- Initial Cloud Run configuration: `us-central1`, request-based billing, 1 vCPU, 512 MiB RAM, minimum zero and maximum one instance at service level, request concurrency eight, and request timeout 60 seconds. The application independently limits active chat turns to four. Verify actual RAM usage after deployment.
+- Iteration 04 deployed Cloud SQL for PostgreSQL 17, Enterprise edition, `db-g1-small` (shared CPU, approximately 1.7 GiB RAM), 10 GiB SSD, and a single zone. Use public IP through a Cloud SQL connector without unrestricted direct database access.
+- With minimum zero instances, Cloud Run can scale the backend to zero after inactivity and start it again on the next request; this can add cold-start latency. Database data and sessions persist in PostgreSQL. Cloud SQL does not automatically stop when Cloud Run scales to zero.
 - Initially fund eligible Google Cloud usage with the available trial credit. The trial's remaining balance and expiration must be checked before deployment; it is not unlimited free usage for 90 days.
 - Configure billing visibility and spending alerts. Do not treat alerts as an immediate spending cutoff.
 - Backups and restoration workflows are outside the initial scope.
@@ -181,7 +183,7 @@ This is a target layout, not an instruction to scaffold every file immediately. 
 | `prompts/` | Packaged static finance XML, validation/loading, revision hash, and separate escaped name context. |
 | `adapters/outbound/identity/` | Resolve identity through PostgreSQL-backed sessions in iteration 03. The initial development adapter remains an explicit local/test-only alternative. |
 | `frontend/` | React/TypeScript forms, session state, history, and streamed chat UI. Vite proxies same-origin API paths locally and builds static production assets. |
-| `adapters/outbound/rate_limit/` | Implement the rate-limit contract. The initial memory adapter is local-only. |
+| `adapters/outbound/rate_limit/` | Implement the rate-limit contract. The memory adapter is retained for local use and the initial personal cloud trial; strict shared enforcement is deferred by explicit user decision. |
 | `migrations/` | Alembic environment and versioned database migrations. |
 | `tests/` | Focused application, HTTP, and PostgreSQL behavior tests. |
 
@@ -217,6 +219,7 @@ Include the following controls from the initial implementation. Local defaults a
 - **Shared coordination:** the local implementation uses PostgreSQL session advisory locks on dedicated connections. A future Valkey adapter can implement the same port. Confirm the deployed choice before provisioning; process-local locks alone are insufficient.
 - **Safe lock lifecycle:** define acquisition, ownership, release, expiration or recovery, and behavior when lock storage is unavailable. Coordinate cancellation and lock release so a previous execution cannot continue concurrently with a new turn in the same conversation.
 - **Per-user rate limiting:** restrict message submission frequency independently of the conversation lock.
+- **Initial cloud rate-limit scope:** keep bounded process-local chat/auth limits for the personal trial with one worker and maximum one instance. The user explicitly accepted counter resets on restart and independent counters during revision overlap. Shared rate limiting is deferred; PostgreSQL conversation locks remain required and shared.
 - **Admission control:** bound the number of active executions admitted by the backend.
 - **Timeouts:** define a total turn deadline and appropriate model/tool operation timeouts.
 - **Agent limits:** cap model calls, tool calls, and graph execution steps. Count these separately because one model response can request several tools.
@@ -229,6 +232,7 @@ Choose active-execution limits based on this application's resources and measure
 
 - Use Secret Manager for runtime secrets such as external model API keys. It is the selected managed secret store for this Google Cloud deployment.
 - Grant the runtime service account access only to the secrets and resources it needs.
+- Use IAM database authentication for the cloud runtime, migration job, and the personal human SQL administrator. Administrative SQL privileges belong only to the human account; initialize schema/default data privileges with the explicit operator helper, not a built-in database password or API startup side effect.
 - Prefer workload identity and short-lived credentials for GitHub Actions access to Google Cloud.
 - Keep runtime and deployment permissions separate.
 - Keep secrets out of source control, frontend bundles, application logs, and committed configuration.
@@ -238,6 +242,8 @@ Choose active-execution limits based on this application's resources and measure
 ## Observability
 
 Use structured logs and Google Cloud logging/monitoring capabilities to understand behavior and cost.
+
+Iteration 05 carries the pending operational review from iteration 04: document how to inspect Cloud SQL memory usage and memory components in the Google Cloud console / Cloud Monitoring, together with CPU utilization and database connections. Also document Cloud Run container memory utilization separately. Use these metrics to evaluate the initial sizing; distinguish database memory usage from reclaimable cache rather than treating all allocated memory as pressure.
 
 Record, where available:
 
@@ -288,9 +294,10 @@ This is a tentative roadmap grouped by working outcomes. Refine each iteration b
 | 01 — Initial backend setup | FastAPI, PostgreSQL/Alembic, ports and adapters, simulated async agent, streaming, coordination, and Docker Compose. Implemented locally. | A tested local backend with persisted conversations. |
 | 02 — OpenAI finance agent and tool readiness | OpenAI provider adapter, configurable model, finance-focused instructions, real streaming and usage/timing logs, and a bounded model/tools execution path. Register no concrete tools. | Local implementation; the user will perform the live provider check after adding an API key. |
 | 03 — Users and frontend | Implemented locally: username/password registration, display name, backend-validated revocable sessions/logout, React + TypeScript + Vite + Tailwind, streamed chat/history, and separate component env files. | Use the local application from a browser with real user identity and enforced conversation ownership. |
-| 04 — Google Cloud with Terraform | Cloud Run, Cloud SQL, Firebase Hosting, Secret Manager, permissions, secure remote Terraform state, and an initial deployment. Replace local-only coordination where needed; configure resources, logs, spending alerts, and production settings. | A first production environment provisioned with Terraform, initially deployed manually. |
-| 05 — GitHub Actions | Pull-request checks, image builds, short-lived Google Cloud authentication, database migrations, and controlled deployments. | Deliver changes through a repeatable CI/CD pipeline. |
-| 06 — Staging | Reuse infrastructure modules with separate configuration, data, and secrets; define promotion to production. | Two environments with a clear delivery workflow. |
+| 04 — Google Cloud backend with Terraform | Complete: remote state, APIs, IAM, Artifact Registry, Secret Manager, Cloud SQL, IAM grants, migration job, and Cloud Run backend. | Backend deployed manually; the user verified live/ready HTTP 200 and PostgreSQL access. |
+| 05 — Firebase Hosting | Publish the existing frontend, configure Hosting-to-Cloud Run rewrites, verify browser auth/history/streaming and two-user isolation, and finish the brief operational handoff. | A working deployed browser application and documented inspection/manual release steps. See [specification](../specs/05-firebase-hosting.md). |
+| 06 — GitHub Actions | Pull-request checks, image builds, short-lived Google Cloud authentication, database migrations, and controlled deployments. | Deliver changes through a repeatable CI/CD pipeline. |
+| 07 — Staging | Reuse infrastructure modules with separate configuration, data, and secrets; define promotion to production. | Two environments with a clear delivery workflow. |
 | Optional — RAG | Define a knowledge source, ingestion/indexing, retrieval, and evaluation when the intended data and use case are known. | Answers grounded in the selected knowledge source. |
 
 Tools do not require RAG. Iteration 02 prepares the graph and OpenAI integration for future tools without adding a calculator, business tool, or hosted provider tool. Its XML finance prompt includes separate per-user name context. OpenAI defaults to `gpt-6.1-terra`, overridable through configuration. Recording this roadmap does not authorize starting later iterations automatically.

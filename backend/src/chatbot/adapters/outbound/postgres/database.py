@@ -1,21 +1,32 @@
 from contextlib import asynccontextmanager
 
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from chatbot.config import DatabaseSettings
 from chatbot.domain.errors import Unavailable
+from .connections import PostgresConnections
 
 
 class Database:
-    def __init__(self, url: str, capacity: int):
-        options = dict(pool_pre_ping=True, pool_timeout=2, max_overflow=0)
-        connect_args = {"server_settings": {"statement_timeout": "5000"}}
-        self.engine = create_async_engine(url, pool_size=capacity + 2, connect_args=connect_args, **options)
-        # Session locks require a dedicated connection, not a long-running transaction.
-        self.lock_engine = create_async_engine(
-            url, pool_size=capacity, isolation_level="AUTOCOMMIT", connect_args=connect_args, **options
+    def __init__(self, url: str, capacity: int, *, pool_size: int | None = None, connections=None):
+        # Keep the explicit direct constructor for local adapter/integration callers.
+        self.connections = connections or PostgresConnections(
+            DatabaseSettings(database_mode="direct", database_url=url)
         )
+        self.engine = self.connections.engine(pool_size=pool_size if pool_size is not None else capacity + 2)
+        # Session locks require a dedicated connection, not a long-running transaction.
+        self.lock_engine = self.connections.engine(pool_size=capacity, autocommit=True)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
+
+    @classmethod
+    async def open(cls, settings: DatabaseSettings, capacity: int):
+        connections = await PostgresConnections.open(settings)
+        try:
+            return cls(settings.sqlalchemy_url, capacity, pool_size=settings.database_pool_size, connections=connections)
+        except BaseException:
+            await connections.close()
+            raise
 
     @asynccontextmanager
     async def session(self):
@@ -26,5 +37,10 @@ class Database:
             raise Unavailable() from exc
 
     async def close(self):
-        await self.lock_engine.dispose()
-        await self.engine.dispose()
+        try:
+            await self.lock_engine.dispose()
+        finally:
+            try:
+                await self.engine.dispose()
+            finally:
+                await self.connections.close()
