@@ -16,10 +16,11 @@ export default function AuthForm({ onLogin }: { onLogin: (session: Session) => v
     if (register && password !== form.get('confirmation')) { setError('Las contraseñas no coinciden.'); return }
     submitting.current = true; setBusy(true); setError('')
     try {
-      const session = await api<Session>(register ? '/auth/register' : '/auth/login', {
+      const session = await api<Session | { status: 'pending_approval'; message: string }>(register ? '/auth/register' : '/auth/login', {
         method: 'POST', body: { username: form.get('username'), password,
           ...(register ? { display_name: form.get('name'), password_confirmation: form.get('confirmation') } : {}) },
       })
+      if ('status' in session) { setRegister(false); setError(session.message); return }
       onLogin(session)
     } catch (error) { setError(errorMessage(error)) }
     finally { submitting.current = false; setBusy(false) }

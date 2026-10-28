@@ -55,7 +55,7 @@ The backend uses Python 3.13 with dependencies pinned in `backend/uv.lock`. The 
 ## User experience
 
 1. A user registers with a display name, username, password, and matching password confirmation; no email.
-2. The user signs in with username and password.
+2. New accounts have `blocked=true` and `is_admin=false`. An approved administrator approves accounts in a minimal user dashboard; pending login stays in the access form with an inline approval message. The first administrator is promoted manually through SQL. See [user approval](user-approval.md).
 3. The user opens their single persistent conversation.
 4. The user sends a message and receives a streamed response.
 5. Previous messages remain available when the user returns.

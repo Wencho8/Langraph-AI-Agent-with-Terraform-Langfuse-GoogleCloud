@@ -12,7 +12,7 @@ make health
 make test
 ```
 
-Open [http://localhost:5173](http://localhost:5173), create an account with name/username/password/repeated password, and chat. Passwords require 15–128 characters; usernames use 3–32 letters, digits, dots, underscores or hyphens. Reload to check history; logout/login to check session handling. The name is LLM profile context; the username identifies login.
+Open [http://localhost:5173](http://localhost:5173) and create an account with name/username/password/repeated password. Accounts require administrator approval before login; see [user approval and first administrator setup](doc/user-approval.md). Passwords require 15–128 characters; usernames use 3–32 letters, digits, dots, underscores or hyphens. Reload to check history; logout/login to check session handling. The name is LLM profile context; the username identifies login.
 
 `make start` initializes separate ignored env files, builds both images, starts PostgreSQL, explicitly migrates the schema, seeds optional development users, and starts backend/frontend. Migration/seed commands reuse the backend image; only the three normal application services remain running. Data survives ordinary restarts. A legacy root `.env` is moved into the new locations with its model key preserved; values are never printed.
 

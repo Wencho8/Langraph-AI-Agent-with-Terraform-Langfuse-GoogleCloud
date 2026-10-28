@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import text
@@ -22,6 +22,8 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(120))
     username: Mapped[str | None] = mapped_column(String(32), unique=True)
     password_hash: Mapped[str | None] = mapped_column(Text)
+    is_admin: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    blocked: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

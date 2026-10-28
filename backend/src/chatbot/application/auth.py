@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from chatbot.application.ports import AuthLimiter, AuthRepository, PasswordHasher
 from chatbot.domain.auth import Account, AuthSession, SessionGrant
-from chatbot.domain.errors import InvalidCredentials, Unauthorized
+from chatbot.domain.errors import AccountBlocked, InvalidCredentials, Unauthorized
 from chatbot.domain.models import UserProfile
 
 logger = logging.getLogger("chatbot")
@@ -38,10 +38,9 @@ class AuthService:
     async def register(self, name: str, username: str, password: str, client: str, previous: str | None):
         self.limiter.check([("register:ip:" + client, self.registration_limit)])
         account = Account(uuid4(), username, name, await self.passwords.hash(password))
-        grant = self.grant(UserProfile(account.id, name), username)
-        await self.repository.create(account, grant.session, token_verifier(grant.token), token_verifier(previous))
+        await self.repository.create(account, None, None, None)
         logger.info(json.dumps({"event": "auth_registered", "user_id": str(account.id)}))
-        return grant
+        return None
 
     async def login(self, username: str, password: str, client: str, previous: str | None):
         self.limiter.check([("login:ip:" + client, self.login_limit), ("login:user:" + username, self.login_limit)])
@@ -50,8 +49,12 @@ class AuthService:
         if account is None or not valid:
             logger.info(json.dumps({"event": "auth_login_failed", "code": "invalid_credentials"}))
             raise InvalidCredentials()
+        if account.blocked:
+            raise AccountBlocked()
         grant = self.grant(UserProfile(account.id, account.display_name), username)
         await self.repository.login(grant.session, token_verifier(grant.token), token_verifier(previous))
+        # Resolve fresh role/access state after the transactional login check.
+        grant = SessionGrant(grant.token, await self.resolve(grant.token))
         logger.info(json.dumps({"event": "auth_login_succeeded", "user_id": str(account.id)}))
         return grant
 
@@ -74,3 +77,12 @@ class AuthService:
         if verifier:
             await self.repository.revoke(verifier)
         logger.info(json.dumps({"event": "auth_logout"}))
+
+
+    async def list_accounts(self, token, offset=0):
+        session = await self.resolve(token)
+        return await self.repository.list_accounts(session.user.id, offset, 100)
+
+    async def set_blocked(self, token, user_id, blocked):
+        session = await self.resolve(token)
+        await self.repository.set_blocked(session.user.id, user_id, blocked)

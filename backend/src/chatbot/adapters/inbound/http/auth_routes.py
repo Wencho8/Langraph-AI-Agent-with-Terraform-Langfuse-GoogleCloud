@@ -1,6 +1,9 @@
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, StrictBool
 
 from chatbot.domain.errors import Forbidden, Unauthorized
 from .auth_schemas import Login, Register
@@ -47,7 +50,7 @@ async def mutation_guard(request: Request):
 
 def session_body(session):
     return {"user": {"id": str(session.user.id), "display_name": session.user.display_name,
-                     "username": session.username}, "csrf_token": session.csrf_token,
+                     "username": session.username, "is_admin": session.is_admin}, "csrf_token": session.csrf_token,
             "expires_at": session.expires_at.isoformat()}
 
 
@@ -65,12 +68,11 @@ def client_key(request):
 
 @router.post("/register", status_code=201, dependencies=[Depends(mutation_guard)])
 async def register(payload: Register, request: Request, response: Response):
-    grant = await request.app.state.auth.register(
+    await request.app.state.auth.register(
         payload.display_name, payload.username, payload.password.get_secret_value(),
         client_key(request), request.cookies.get(COOKIE),
     )
-    set_session(response, request, grant)
-    return session_body(grant.session)
+    return {"status": "pending_approval", "message": "Cuenta creada. Un administrador debe aprobarla antes de que puedas ingresar."}
 
 
 @router.post("/login", dependencies=[Depends(mutation_guard)])
@@ -94,3 +96,19 @@ async def logout(request: Request):
     response.delete_cookie(COOKIE, path="/", httponly=True,
                            secure=request.app.state.settings.session_cookie_secure, samesite="lax")
     return response
+
+
+class BlockAccount(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    blocked: StrictBool
+
+
+@router.get("/admin/users")
+async def admin_users(request: Request, offset: int = Query(default=0, ge=0, le=1000000)):
+    return await request.app.state.auth.list_accounts(request.cookies.get(COOKIE), offset)
+
+
+@router.post("/admin/users/{user_id}/access", status_code=204, dependencies=[Depends(mutation_guard)])
+async def admin_access(user_id: UUID, payload: BlockAccount, request: Request):
+    await request.app.state.auth.set_blocked(request.cookies.get(COOKIE), user_id, payload.blocked)
+    return Response(status_code=204)

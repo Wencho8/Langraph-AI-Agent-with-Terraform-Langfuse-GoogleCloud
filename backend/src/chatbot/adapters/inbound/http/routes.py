@@ -59,7 +59,7 @@ async def application_error(request: Request, error: ChatError):
     from chatbot.application.orchestrator import log_event
 
     status = {
-        "unauthenticated": 401, "invalid_credentials": 401, "username_taken": 409,
+        "account_blocked": 401, "unauthenticated": 401, "invalid_credentials": 401, "username_taken": 409,
         "forbidden": 403, "auth_rate_limited": 429, "auth_busy": 503,
         "unknown_user": 401, "session_busy": 409, "rate_limited": 429,
         "runtime_saturated": 503, "dependency_unavailable": 503,

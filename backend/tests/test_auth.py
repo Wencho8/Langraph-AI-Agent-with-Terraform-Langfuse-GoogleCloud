@@ -39,6 +39,11 @@ async def register(http, username='alice-auth', name='Alice'):
         'display_name': name, 'username': username, 'password': PASSWORD, 'password_confirmation': PASSWORD,
     })
     assert response.status_code == 201, response.text
+    app = http._transport.app
+    async with app.state.auth.repository.database.session() as sql, sql.begin():
+        await sql.execute(update(User).where(User.username == username.strip().lower()).values(blocked=False))
+    response = await http.post('/v1/auth/login', json={'username': username, 'password': PASSWORD})
+    assert response.status_code == 200, response.text
     body = response.json()
     http.headers['X-CSRF-Token'] = body['csrf_token']
     return body
@@ -141,7 +146,7 @@ async def test_expiry_rotation_limits_and_origin_guard(database):
         assert limit.status_code == 429 and limit.headers['retry-after'] == '60'
 
 
-@pytest.mark.parametrize('action', ['logout', 'expire'])
+@pytest.mark.parametrize('action', ['logout', 'expire', 'block'])
 async def test_revoking_a_running_stream_stops_generation_and_unlocks(database, action):
     db, url = database
     async with application(url, delay=0.1) as app, client(app) as http:
@@ -157,6 +162,9 @@ async def test_revoking_a_running_stream_stops_generation_and_unlocks(database, 
             pytest.fail('Turn did not start')
         if action == 'logout':
             assert (await http.post('/v1/auth/logout', json={})).status_code == 204
+        elif action == 'block':
+            async with db.session() as sql, sql.begin():
+                await sql.execute(update(User).where(User.username == 'alice-auth').values(blocked=True))
         else:
             async with db.session() as sql, sql.begin():
                 await sql.execute(update(AuthSessionRecord).values(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)))

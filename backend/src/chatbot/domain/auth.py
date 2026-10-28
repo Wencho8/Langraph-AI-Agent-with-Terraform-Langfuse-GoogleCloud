@@ -11,6 +11,8 @@ class Account:
     username: str
     display_name: str
     password_hash: str
+    is_admin: bool = False
+    blocked: bool = True
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,7 @@ class AuthSession:
     username: str
     csrf_token: str
     expires_at: datetime
+    is_admin: bool = False
 
 
 @dataclass(frozen=True)

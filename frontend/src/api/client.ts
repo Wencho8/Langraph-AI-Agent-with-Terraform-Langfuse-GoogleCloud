@@ -1,4 +1,4 @@
-export type User = { id: string; display_name: string; username: string }
+export type User = { id: string; display_name: string; username: string; is_admin?: boolean }
 export type Session = { user: User; csrf_token: string; expires_at: string }
 export type Message = { id: string; turn_id: string; role: 'user' | 'assistant'; content: string; created_at: string }
 
@@ -7,6 +7,7 @@ export class ApiError extends Error {
 }
 
 const messages: Record<string, string> = {
+  account_blocked: 'Un administrador debe aprobar tu cuenta antes de que puedas ingresar.',
   invalid_credentials: 'El usuario o la contraseña no son correctos.',
   username_taken: 'Ese username ya está en uso. Probá con otro.',
   validation_error: 'Revisá los campos. La contraseña debe tener entre 15 y 128 caracteres y ambas deben coincidir.',

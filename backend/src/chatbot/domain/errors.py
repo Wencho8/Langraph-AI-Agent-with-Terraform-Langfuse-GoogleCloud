@@ -8,6 +8,11 @@ class Unauthorized(ChatError):
     message = "Please sign in again."
 
 
+class AccountBlocked(ChatError):
+    code = "account_blocked"
+    message = "Un administrador debe aprobar tu cuenta antes de que puedas ingresar."
+
+
 class InvalidCredentials(ChatError):
     code = "invalid_credentials"
     message = "Invalid username or password."
