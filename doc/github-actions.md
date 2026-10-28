@@ -1,6 +1,6 @@
 # GitHub Actions — Setup and Review
 
-Status: implementation reviewed. The user reports applying the OIDC Terraform configuration and setting `GCP_WIF_PROVIDER`, and has explicitly authorized commit/push after review. The first real workflow/deployment remains pending verification. The old nine-addition JSON-key plan was never applied and is obsolete; this guide describes the OIDC design. The assistant has not applied Terraform, created a cloud key, or changed GitHub settings.
+Status: implementation published in commit `21493d7`. The user reports applying OIDC and setting `GCP_WIF_PROVIDER`. First run `40788218956` passed backend and frontend checks, failed Terraform validation on provider package checksums, and skipped deployment. The user subsequently generated Mac/Linux provider hashes for both roots; those hashes were reviewed with provider versions unchanged. A new workflow run must verify the correction. The repository was renamed to `Wencho8/Langraph-AI-Agent-Terraform-and-GCP`; its numeric ID is unchanged. The old nine-addition JSON-key plan was never applied. The assistant has not applied Terraform, created a cloud key, or changed GitHub settings.
 
 ## What runs
 
@@ -78,7 +78,7 @@ Alternatively, after confirming `gh auth status` shows your personal account wit
 
 ```bash
 gh variable set GCP_WIF_PROVIDER \
-  --repo Wencho8/AI-chatbot-Agent---Langraph-Terraform-Gcloud \
+  --repo Wencho8/Langraph-AI-Agent-Terraform-and-GCP \
   --body "$(terraform -chdir=infra/environments/production output -raw github_workload_identity_provider)"
 ```
 
@@ -105,6 +105,23 @@ Avoid overlapping production pushes: there is intentionally no global concurrenc
 `backend_image` is the initial bootstrap image, not a release pointer that Actions must commit. Terraform ignores only the service image/traffic and migration job image so a later infrastructure apply cannot put an old image back. It still manages identities, secrets references, resources, limits, and health checks. A backend config change may create a new revision from the currently observed image. Review every infrastructure plan and check service traffic/readiness after an explicit apply.
 
 ## Local verification
+
+### Provider lockfiles for both the Mac and GitHub runners
+
+CI uses `init -backend=false -lockfile=readonly`. Both Terraform roots need checksums for `darwin_arm64` (the operator's Mac) and `linux_amd64` (GitHub's runner). The initial lockfiles contained a Mac `h1` hash and signed archive `zh` hashes; readonly initialization could verify the Linux archive but could not persist its content hash for subsequent validation of the unpacked package. The first workflow failed at that validation step.
+
+The user prepares the cross-platform lockfiles with the official command:
+
+```bash
+terraform -chdir=infra/bootstrap providers lock -platform=darwin_arm64 -platform=linux_amd64
+terraform -chdir=infra/environments/production providers lock -platform=darwin_arm64 -platform=linux_amd64
+```
+
+This downloads/verifies provider packages and updates `.terraform.lock.hcl`; it does not apply infrastructure or change Terraform state. Review the two lockfile diffs, retain the selected provider versions, then commit/push the added hashes. Rerunning the failed job on the old commit would still use the old lockfiles. Keep readonly initialization in CI and do not hand-edit hashes or disable integrity checking. Repeat this maintenance after a provider version/platform change.
+
+See [Terraform providers lock](https://developer.hashicorp.com/terraform/cli/commands/providers/lock).
+
+### Application and helper checks
 
 Verified locally: 86 backend tests passed against the existing local PostgreSQL, 13 frontend tests passed, and the TypeScript/Vite production build passed. The final pre-push review reran all 19 operator/deployment helper tests with fake cloud/HTTP clients and actionlint 1.7.12 successfully. Application code is unchanged since its passing checks. Terraform commands and real cloud operations were not executed by the assistant; the user reports completing OIDC setup and the GitHub variable. A real workflow run is still required to verify integration.
 

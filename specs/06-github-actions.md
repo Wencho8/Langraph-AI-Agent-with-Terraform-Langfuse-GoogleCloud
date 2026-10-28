@@ -1,6 +1,6 @@
 # Iteration 06 — GitHub Actions
 
-Status: implementation reviewed; the user reports applying the OIDC Terraform configuration and setting the non-secret GitHub variable. The user explicitly authorized commit/push after review. Local application checks passed previously; the final review passed all 19 helper tests and actionlint again. The first real GitHub workflow/deployment remains pending verification. Terraform/cloud setup was operated by the user. Details are recorded in the setup guide.
+Status: published in commit `21493d7`; OIDC provisioning and the GitHub variable are user-reported complete. First workflow run `40788218956` passed backend and frontend checks, failed Terraform provider checksum validation, and skipped deployment. The user subsequently generated Mac/Linux provider hashes for both roots, reviewed with provider versions unchanged; verification in a new workflow run is pending. See the setup guide. Local application/helper checks passed. Terraform/cloud setup remains user-operated; real deployment and OIDC authentication have not yet been exercised by the workflow.
 
 ## Goal
 
