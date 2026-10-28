@@ -1,0 +1,212 @@
+name: Tests and production deploy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# OIDC is granted only to the main-branch deploy job. No global concurrency lock.
+jobs:
+  backend:
+    name: Backend / PostgreSQL 17
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: chatbot_ci
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: chatbot_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chatbot_ci -d chatbot_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_MODE: direct
+      DATABASE_URL: postgresql+asyncpg://chatbot_ci:ci-only-password@127.0.0.1:5432/chatbot_ci
+      APP_ENV: test
+      MODEL: simulated
+      LANGSMITH_TRACING: 'false'
+      LANGCHAIN_TRACING_V2: 'false'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install locked Python dependencies
+        run: |
+          python -m pip install uv==0.9.14
+          uv sync --project backend --frozen
+      - name: Backend tests with real PostgreSQL and Alembic
+        working-directory: backend
+        run: uv run --frozen pytest -q
+      - name: Deployment and operator helper tests (mocked cloud)
+        run: uv run --project backend --frozen python -m unittest discover -s scripts/tests -v
+
+  frontend:
+    name: Frontend / tests and production build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm --prefix frontend ci
+      - run: npm --prefix frontend test
+      - run: npm --prefix frontend run build
+      - name: Keep this run's tested frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  terraform:
+    name: Terraform / format and validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.17.0'
+      - run: terraform fmt -check -recursive infra
+      - name: Validate without cloud credentials or state access
+        run: |
+          terraform -chdir=infra/bootstrap init -backend=false -lockfile=readonly
+          terraform -chdir=infra/bootstrap validate
+          terraform -chdir=infra/environments/production init -backend=false -lockfile=readonly
+          terraform -chdir=infra/environments/production validate
+
+  deploy:
+    name: Deploy changed components to production
+    needs: [backend, frontend, terraform]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CLOUD_PROJECT: wencho8-chatbot-prod
+      CLOUD_PROJECT_NUMBER: '269905799757'
+      CLOUD_REGION: us-central1
+      DEPLOY_ACCOUNT: chatbot-deploy@wencho8-chatbot-prod.iam.gserviceaccount.com
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      FRONTEND_URL: https://wencho8-chatbot-prod.web.app
+      FIREBASE_CLI_VERSION: '15.34.1'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Select changed application components
+        id: changes
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            python scripts/ci_changes.py --force
+          else
+            python scripts/ci_changes.py --before "$BEFORE_SHA" --after "$GITHUB_SHA"
+          fi
+      - name: Check OIDC provider targets the personal project
+        if: steps.changes.outputs.backend == 'true' || steps.changes.outputs.frontend == 'true'
+        run: |
+          python - <<'PY'
+          import os
+          expected = (f"projects/{os.environ['CLOUD_PROJECT_NUMBER']}/locations/global/"
+                      "workloadIdentityPools/chatbot-github/providers/github")
+          if os.environ.get('GCP_WIF_PROVIDER') != expected:
+              raise SystemExit('Set the Actions variable GCP_WIF_PROVIDER from the Terraform output; see doc/github-actions.md.')
+          PY
+      - name: Authenticate through GitHub OIDC and Workload Identity Federation
+        if: steps.changes.outputs.backend == 'true' || steps.changes.outputs.frontend == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.CLOUD_PROJECT }}
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_ACCOUNT }}
+      - name: Install gcloud
+        if: steps.changes.outputs.backend == 'true'
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          version: '548.0.0'
+      - name: Build and push backend image
+        if: steps.changes.outputs.backend == 'true'
+        id: image
+        run: |
+          IMAGE_TAG="$CLOUD_REGION-docker.pkg.dev/$CLOUD_PROJECT/chatbot/backend:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          gcloud auth configure-docker "$CLOUD_REGION-docker.pkg.dev" --quiet
+          docker build --platform linux/amd64 --tag "$IMAGE_TAG" ./backend
+          docker push "$IMAGE_TAG"
+          IMAGE_DIGEST="$(docker image inspect "$IMAGE_TAG" --format '{{index .RepoDigests 0}}')"
+          echo "digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+      - name: Migrate, deploy backend, verify, and roll back traffic on failure
+        if: steps.changes.outputs.backend == 'true'
+        env:
+          BACKEND_IMAGE: ${{ steps.image.outputs.digest }}
+        run: |
+          python scripts/deploy_backend.py \
+            --project "$CLOUD_PROJECT" \
+            --region "$CLOUD_REGION" \
+            --image "$BACKEND_IMAGE" \
+            --suffix "gh-${GITHUB_SHA:0:12}-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - uses: actions/setup-node@v6
+        if: steps.changes.outputs.frontend == 'true'
+        with:
+          node-version: '24'
+      - name: Download this run's tested frontend build
+        if: steps.changes.outputs.frontend == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+      - name: Publish Firebase Hosting using Application Default Credentials
+        if: steps.changes.outputs.frontend == 'true'
+        run: >-
+          npx --yes --package="firebase-tools@$FIREBASE_CLI_VERSION" --
+          firebase deploy --only hosting --project "$CLOUD_PROJECT" --non-interactive
+      - name: Verify published frontend assets and API routing
+        if: steps.changes.outputs.frontend == 'true'
+        run: python scripts/check_deployment.py --frontend-url "$FRONTEND_URL"
+      - name: Release summary
+        if: always()
+        env:
+          BACKEND_SELECTED: ${{ steps.changes.outputs.backend }}
+          FRONTEND_SELECTED: ${{ steps.changes.outputs.frontend }}
+          RELEASE_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "Commit: $GITHUB_SHA"
+            echo "Backend selected: $BACKEND_SELECTED; frontend selected: $FRONTEND_SELECTED."
+            echo "Deployment job status: $RELEASE_STATUS."
+            echo "Frontend: $FRONTEND_URL"
+            echo "Database migrations are never downgraded automatically."
+          } >> "$GITHUB_STEP_SUMMARY"

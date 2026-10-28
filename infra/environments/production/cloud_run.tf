@@ -21,6 +21,12 @@ resource "google_cloud_run_v2_service" "backend" {
   ingress             = "INGRESS_TRAFFIC_ALL"
   deletion_protection = false
 
+  # Terraform owns service configuration; the release workflow owns the current
+  # image and explicit revision traffic (including rollback).
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image, traffic]
+  }
+
   # Service-level cap across revisions receiving traffic, not just one revision.
   scaling {
     min_instance_count = 0

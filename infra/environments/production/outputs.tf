@@ -47,3 +47,13 @@ output "frontend_origin" {
   description = "Configured frontend origin; Hosting publication is a separate step."
   value       = var.frontend_origin
 }
+
+output "deploy_service_account" {
+  description = "Dedicated GitHub Actions deployment identity impersonated through OIDC; no private key."
+  value       = google_service_account.deploy.email
+}
+
+output "github_workload_identity_provider" {
+  description = "Non-secret provider resource name to set as the GitHub Actions variable GCP_WIF_PROVIDER."
+  value       = google_iam_workload_identity_pool_provider.github.name
+}

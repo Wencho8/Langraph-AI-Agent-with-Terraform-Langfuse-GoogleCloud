@@ -15,6 +15,11 @@ resource "google_cloud_run_v2_job" "migrations" {
   location            = var.region
   deletion_protection = false
 
+  # Seed a new job from backend_image; later releases select the migration image.
+  lifecycle {
+    ignore_changes = [template[0].template[0].containers[0].image]
+  }
+
   template {
     task_count  = 1
     parallelism = 1

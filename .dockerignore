@@ -1,4 +1,5 @@
 .git
+gha-creds-*.json
 .env
 **/.venv
 **/__pycache__

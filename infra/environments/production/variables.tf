@@ -19,7 +19,7 @@ variable "sql_admin_email" {
 }
 
 variable "backend_image" {
-  description = "Published backend image pinned to an immutable sha256 digest."
+  description = "Initial immutable backend/job image for resource creation; application releases subsequently own image updates."
   type        = string
 
   validation {

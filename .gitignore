@@ -19,3 +19,5 @@ crash.*.log
 # Firebase CLI cache and local debug logs
 .firebase/
 firebase-debug.log*
+# Temporary credentials created and removed by google-github-actions/auth
+gha-creds-*.json

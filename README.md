@@ -180,10 +180,13 @@ Alembic migrations live in `backend/migrations/`, including `0003_auth_sessions`
 
 ## Specifications
 
+GitHub Actions configuration is prepared in `.github/workflows/ci-deploy.yml`: PRs targeting `main` run backend/frontend tests and Terraform checks; pushes to `main` also deploy changed components after passing checks. Activation needs the dedicated deploy IAM/OIDC configuration and the non-secret repository variable described in [setup and review](doc/github-actions.md). No cloud activation is implied by the local files. Backend rollback restores traffic only; schema downgrades and frontend rollback remain manual.
+
 - [Project definitions](doc/definitions.md)
 - [Iteration 01](specs/01-initial-backend-setup.md)
 - [Iteration 02](specs/02-openai-finance-agent.md)
 - [Iteration 03](specs/03-users-and-chat-ui.md)
 - [Iteration 04 — Guided Google Cloud Backend Deployment (complete)](specs/04-guided-google-cloud-deployment.md)
 - [Iteration 05 — Firebase Hosting (functionally complete; operational follow-ups pending)](specs/05-firebase-hosting.md)
+- [Iteration 06 — GitHub Actions (implementation prepared; activation pending)](specs/06-github-actions.md)
 - [Short request/concurrency flow](doc/request-flow.md)
