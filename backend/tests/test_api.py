@@ -17,10 +17,10 @@ def frames(response):
 
 async def test_http_stream_history_isolation_and_restart(database):
     _, url = database
-    settings = Settings(database_url=url, app_env="test", dev_identity_enabled=True, simulated_chunk_delay_seconds=0)
+    settings = Settings(database_url=url, app_env="test", auth_mode="development", simulated_chunk_delay_seconds=0)
     app = create_app(settings)
     async with app.router.lifespan_context(app), httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers={"Origin": "http://localhost:5173"}
     ) as client:
         assert (await client.get("/health/live")).status_code == 200
         assert (await client.get("/health/ready")).status_code == 200
@@ -43,7 +43,7 @@ async def test_http_stream_history_isolation_and_restart(database):
     # Recreate the application to verify persistence outside graph/process state.
     restarted = create_app(settings)
     async with restarted.router.lifespan_context(restarted), httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=restarted), base_url="http://test"
+        transport=httpx.ASGITransport(app=restarted), base_url="http://test", headers={"Origin": "http://localhost:5173"}
     ) as client:
         assert len((await client.get("/v1/chat/messages", headers=alice)).json()) == 4
 
@@ -51,11 +51,11 @@ async def test_http_stream_history_isolation_and_restart(database):
 async def test_rate_limit_and_readiness_failure(database):
     _, url = database
     app = create_app(Settings(
-        database_url=url, app_env="test", dev_identity_enabled=True,
+        database_url=url, app_env="test", auth_mode="development",
         simulated_chunk_delay_seconds=0, rate_limit_requests=1,
     ))
     async with app.router.lifespan_context(app), httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers={"Origin": "http://localhost:5173"}
     ) as client:
         headers = {"X-Dev-User-Id": "alice"}
         assert (await client.post("/v1/chat/messages", headers=headers, json={"message": "one"})).status_code == 200
@@ -72,7 +72,7 @@ async def test_rate_limit_and_readiness_failure(database):
 
 def test_development_auth_refused_in_production():
     with pytest.raises(ValidationError):
-        Settings(database_url="postgresql+asyncpg://unused", app_env="production", dev_identity_enabled=True)
+        Settings(database_url="postgresql+asyncpg://unused", app_env="production", auth_mode="development")
 
 
 async def test_mocked_openai_http_persistence_profiles_history_and_failure(database, monkeypatch, caplog):
@@ -89,10 +89,10 @@ async def test_mocked_openai_http_persistence_profiles_history_and_failure(datab
 
     harness = OpenAIHarness(reply)
     monkeypatch.setattr("chatbot.app.create_model", lambda settings: harness.model)
-    app = create_app(Settings(database_url=url, app_env="test", dev_identity_enabled=True,
+    app = create_app(Settings(database_url=url, app_env="test", auth_mode="development",
                               model="openai:fixture-model", openai_api_key="offline-fixture-key"))
     async with app.router.lifespan_context(app), httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers={"Origin": "http://localhost:5173"}
     ) as client:
         assert harness.requests == []
         assert (await client.get("/health/ready")).status_code == 200

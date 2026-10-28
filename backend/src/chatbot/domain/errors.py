@@ -3,6 +3,36 @@ class ChatError(Exception):
     message = "The request could not be completed."
 
 
+class Unauthorized(ChatError):
+    code = "unauthenticated"
+    message = "Please sign in again."
+
+
+class InvalidCredentials(ChatError):
+    code = "invalid_credentials"
+    message = "Invalid username or password."
+
+
+class UsernameTaken(ChatError):
+    code = "username_taken"
+    message = "That username is already taken."
+
+
+class Forbidden(ChatError):
+    code = "forbidden"
+    message = "The request origin or CSRF token is invalid."
+
+
+class AuthRateLimited(ChatError):
+    code = "auth_rate_limited"
+    message = "Too many authentication attempts. Try again in a minute."
+
+
+class AuthBusy(ChatError):
+    code = "auth_busy"
+    message = "Authentication is busy. Try again shortly."
+
+
 class UnknownUser(ChatError):
     code = "unknown_user"
     message = "Select a known local user using X-Dev-User-Id."

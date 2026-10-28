@@ -1,4 +1,5 @@
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,7 +10,12 @@ class Settings(BaseSettings):
 
     database_url: str
     app_env: Literal["local", "test", "production"] = "local"
-    dev_identity_enabled: bool = False
+    auth_mode: Literal["session", "development"] = "session"
+    app_origin: str = "http://localhost:5173"
+    session_ttl_seconds: int = Field(default=86400, ge=60, le=2592000)
+    session_cookie_secure: bool = False
+    auth_login_limit: int = Field(default=10, ge=1)
+    auth_registration_limit: int = Field(default=5, ge=1)
     max_active_turns: int = Field(default=4, ge=1, le=32)
     rate_limit_requests: int = Field(default=20, ge=1)
     rate_limit_window_seconds: float = Field(default=60, gt=0)
@@ -49,8 +55,13 @@ class Settings(BaseSettings):
     def validate_runtime(self):
         if not self.database_url.startswith("postgresql+asyncpg://"):
             raise ValueError("DATABASE_URL must use postgresql+asyncpg://")
-        if self.dev_identity_enabled and self.app_env not in {"local", "test"}:
+        if self.auth_mode == "development" and self.app_env not in {"local", "test"}:
             raise ValueError("Development identity is allowed only in local/test")
+        origin = urlsplit(self.app_origin)
+        if origin.scheme not in {"http", "https"} or not origin.hostname or origin.username or origin.password or origin.path or origin.query or origin.fragment:
+            raise ValueError("APP_ORIGIN must be an exact http(s) origin without a path")
+        if self.app_env == "production" and (origin.scheme != "https" or not self.session_cookie_secure):
+            raise ValueError("Production requires HTTPS APP_ORIGIN and secure session cookies")
         if self.model_timeout_seconds > self.turn_timeout_seconds:
             raise ValueError("Model timeout must not exceed the total turn timeout")
         if self.model_provider == "openai" and (

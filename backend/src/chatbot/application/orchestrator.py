@@ -13,7 +13,7 @@ from chatbot.domain.agent import (
     AgentCompleted, AgentEvent, AgentRequest, ModelCallFinished, ModelCallStarted,
     TextDelta, ToolCallStarted, aggregate_usage,
 )
-from chatbot.domain.errors import ChatError, InvalidModelResponse, Saturated, TurnTimedOut
+from chatbot.domain.errors import ChatError, InvalidModelResponse, Saturated, TurnTimedOut, Unavailable
 from chatbot.domain.models import ChatEvent, Message, Turn, UserProfile
 
 logger = logging.getLogger("chatbot")
@@ -40,7 +40,7 @@ class ChatOrchestrator:
     async def history(self, user_id: UUID) -> list[Message]:
         return await self.repository.messages(user_id)
 
-    async def open(self, user: UserProfile, text: str, request_id: str):
+    async def open(self, user: UserProfile, text: str, request_id: str, *, check_access=None):
         self.limiter.check(user.id)
         # No await between checking and incrementing on this process's single event loop.
         if self.active >= self.capacity:
@@ -51,9 +51,11 @@ class ChatOrchestrator:
         deadline = asyncio.get_running_loop().time() + self.turn_timeout
         try:
             async with asyncio.timeout_at(deadline):
+                if check_access is not None:
+                    await check_access()
                 lease = await self.locks.acquire(user.id)
                 turn, history = await self.repository.begin(user.id, text)
-            return ChatExecution(self, lease, turn, history, user, request_id, started, deadline)
+            return ChatExecution(self, lease, turn, history, user, request_id, started, deadline, check_access)
         except BaseException as exc:
             with anyio.CancelScope(shield=True):
                 try:
@@ -69,7 +71,7 @@ class ChatOrchestrator:
 class ChatExecution:
     """Owns admission and the lease until the HTTP response finishes or is cancelled."""
 
-    def __init__(self, owner, lease: LockLease, turn: Turn, history, user, request_id, started, deadline):
+    def __init__(self, owner, lease: LockLease, turn: Turn, history, user, request_id, started, deadline, check_access=None):
         self.owner = owner
         self.lease = lease
         self.turn = turn
@@ -86,6 +88,16 @@ class ChatExecution:
         self.tool_calls = 0
         self.calls = []
         self.result = None
+        self.check_access = check_access
+
+    async def check(self):
+        await self.lease.check()
+        if self.check_access is not None:
+            try:
+                async with asyncio.timeout(2):
+                    await self.check_access()
+            except TimeoutError:
+                raise Unavailable() from None
 
     def metadata(self):
         return {
@@ -97,14 +109,14 @@ class ChatExecution:
 
     async def _watch_lock(self):
         while True:
-            await self.lease.check()
+            await self.check()
             await asyncio.sleep(0.5)
 
     async def _chunks(self) -> AsyncIterator[AgentEvent]:
         """Race each model chunk with lock loss; always stop children before unlocking."""
         watcher = asyncio.create_task(self._watch_lock())
         next_chunk = None
-        request = AgentRequest(self.user, self.history, self.deadline, self.lease.check)
+        request = AgentRequest(self.user, self.history, self.deadline, self.check)
         async with aclosing(self.owner.agent.stream(request)) as stream:
             try:
                 while True:
@@ -149,7 +161,7 @@ class ChatExecution:
                             self.result = event
                 if self.result is None:
                     raise InvalidModelResponse()
-                await self.lease.check()
+                await self.check()
                 message = await self.owner.repository.complete(
                     self.turn, self.result.text, transcript=self.result.transcript, metadata=self.result.metadata
                 )

@@ -17,4 +17,4 @@ COPY tests ./tests
 RUN useradd --create-home chatbot && chown -R chatbot:chatbot /app
 USER chatbot
 EXPOSE 8080
-CMD ["uvicorn", "chatbot.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+CMD ["uvicorn", "chatbot.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--no-proxy-headers"]

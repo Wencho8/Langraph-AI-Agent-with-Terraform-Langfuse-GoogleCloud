@@ -11,7 +11,7 @@ from chatbot.domain.agent import ChatHistory, ModelItem
 from chatbot.domain.errors import Unavailable
 from chatbot.domain.models import Message, Turn, UserProfile
 from .database import Database
-from .models import Conversation, MessageRecord, TurnRecord, User
+from .models import AuthSessionRecord, Conversation, MessageRecord, TurnRecord, User
 
 
 def to_message(row: MessageRecord) -> Message:
@@ -31,7 +31,7 @@ class PostgresConversationRepository:
             revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
             if revision != self.schema_head:
                 raise Unavailable()
-            for model in (User, Conversation, TurnRecord, MessageRecord):
+            for model in (User, Conversation, TurnRecord, MessageRecord, AuthSessionRecord):
                 await session.execute(select(model).limit(0))
 
     async def profile(self, user_id: UUID) -> UserProfile | None:

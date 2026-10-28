@@ -1,6 +1,6 @@
 # Agent Chatbot on Google Cloud — Definitions
 
-Status: evolving project decisions. Iterations 01–02 cover the local backend and OpenAI integration.
+Status: evolving project decisions. Iterations 01–03 implement the local backend, OpenAI integration, username authentication, and React chat UI. Cloud deployment is deferred.
 
 ## Purpose
 
@@ -15,7 +15,7 @@ The chatbot's initial domain is personal finance and financial education. It sho
 - Repository name: `agent-chatbot-gcloud`.
 - Keep the Python backend, frontend, infrastructure definitions, and CI/CD workflows in the same repository.
 - Maintain project-wide decisions in this document and iteration specifications in `specs/`.
-- Iteration 01 covers the local backend. Frontend, cloud infrastructure, and deployment workflows remain deferred.
+- Iteration 01 covers the local backend; iteration 02 adds OpenAI; iteration 03 defines users and the frontend. Cloud infrastructure and deployment workflows remain deferred.
 - Implement one backend application. Use internal modules and clear boundaries rather than separate microservices.
 
 ## Technology decisions
@@ -26,9 +26,9 @@ The chatbot's initial domain is personal finance and financial education. It sho
 | HTTP server | Uvicorn, initially with one worker process per container |
 | Agent execution | LangGraph |
 | First real model provider | OpenAI Responses via the async SDK; configurable model, initially `gpt-6.1-terra` |
-| Frontend | A minimal HTML, CSS, and JavaScript interface in this repository; no Vite |
+| Frontend | React + TypeScript + Vite + Tailwind CSS in `frontend/`; minimal auth/chat screens titled "Chatbot de finanzas" |
 | Frontend hosting | Firebase Hosting |
-| Authentication | Firebase Authentication with email and password |
+| Authentication | Username/password verified in FastAPI; Argon2id password hashes and revocable PostgreSQL sessions in HttpOnly cookies; no email or Firebase Authentication |
 | Database | PostgreSQL; local PostgreSQL during development and Cloud SQL for PostgreSQL in Google Cloud |
 | Database access and migrations | Async SQLAlchemy with asyncpg, and Alembic migrations |
 | Local environment | Docker Compose |
@@ -38,7 +38,7 @@ The chatbot's initial domain is personal finance and financial education. It sho
 | Runtime secrets | Google Cloud Secret Manager |
 | Backend tests | pytest, including support for async tests |
 
-The backend uses Python 3.13 with dependencies pinned in `backend/uv.lock`. Frontend implementation remains deferred.
+The backend uses Python 3.13 with dependencies pinned in `backend/uv.lock`. The frontend uses Node 24 with `frontend/package-lock.json`. Vite/Tailwind are development/build tooling; Firebase Hosting will serve the compiled static assets.
 
 ## Environments and cost
 
@@ -52,19 +52,23 @@ The backend uses Python 3.13 with dependencies pinned in `backend/uv.lock`. Fron
 
 ## User experience
 
-1. A user registers with email and password.
-2. The user signs in.
+1. A user registers with a display name, username, password, and matching password confirmation; no email.
+2. The user signs in with username and password.
 3. The user opens their single persistent conversation.
 4. The user sends a message and receives a streamed response.
 5. Previous messages remain available when the user returns.
+6. The user signs out; the backend revokes the current login session and the UI clears its user/chat state.
 
 The frontend should be intentionally simple. Authentication is a supporting feature, not the focus of the project.
 
-The backend must verify the authentication token and derive the user identity from it. Every conversation read, write, and execution must be authorized for that user.
+The backend derives identity from a validated, unexpired, unrevoked session cookie. The username identifies the login account; the existing display name is what the LLM receives as profile context. Every conversation read, write, and execution must be authorized for that user. Cookie-based mutations require origin/CSRF protection; development identity never acts as a fallback in session mode.
+
+During generation the composer/send action is disabled, and terminal events/errors release it. Server-side conversation locks remain authoritative across tabs/devices. Session restore loads the signed-in user's history; user switching must never retain the previous user's messages.
 
 ## Conversations and history
 
-- The implemented tables are `users`, `conversations`, `turns`, and `messages`. There is no separate `sessions` table. A conversation belongs to one user; it has many turns, and each turn has its user/final assistant messages.
+- The implemented tables are `users`, `conversations`, `turns`, `messages`, and `auth_sessions`. A conversation belongs to one user; it has many turns, and each turn has its user/final assistant messages.
+- `auth_sessions` is for login lifecycle only. Authentication sessions do not replace conversations, turns, or their transcripts/metadata. Multiple login sessions can access one user's conversation; logout revokes only the current session.
 - `turns.agent_transcript` stores that turn's internal model/tool sequence for future context reconstruction. `turns.execution_metadata` stores that turn's provider/model, prompt revision, usage, timings, and call counts. Both belong to an individual execution; user and conversation records do not aggregate or overwrite them.
 - Maintain one persistent conversation per user.
 - Store user and assistant messages in PostgreSQL.
@@ -97,8 +101,15 @@ agent-chatbot-gcloud/
 │   └── request-flow.md
 ├── specs/
 │   ├── 01-initial-backend-setup.md
-│   └── 02-openai-finance-agent.md
+│   ├── 02-openai-finance-agent.md
+│   └── 03-users-and-chat-ui.md
+├── frontend/
+│   ├── .env.example
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── src/
 ├── backend/
+│   ├── .env.example
 │   ├── pyproject.toml
 │   ├── Dockerfile
 │   ├── alembic.ini
@@ -147,13 +158,12 @@ agent-chatbot-gcloud/
 │       ├── test_api.py
 │       └── test_postgres.py
 ├── compose.yaml
-├── .env.example
 ├── .gitignore
 ├── Makefile
 └── README.md
 ```
 
-This is a target layout, not an instruction to scaffold every file immediately. Add files as their behavior is implemented. Keep the frontend and Terraform in this same repository when their iterations begin; their detailed layouts are deferred.
+This is a target layout, not an instruction to scaffold every file immediately. Add files as their behavior is implemented. The frontend's small internal layout is defined in iteration 03; Terraform's layout remains deferred.
 
 | Location | Responsibility |
 | --- | --- |
@@ -169,7 +179,8 @@ This is a target layout, not an instruction to scaffold every file immediately. 
 | `adapters/outbound/models/` | Implement one model request through the OpenAI or simulated adapter; the factory selects the provider. |
 | `application/tools.py` | Allowlisted tool definitions, schema validation, and sequential async execution. The runtime registry is empty. |
 | `prompts/` | Packaged static finance XML, validation/loading, revision hash, and separate escaped name context. |
-| `adapters/outbound/identity/` | Resolve/verify identity through a replaceable implementation. The initial development adapter is local-only; Firebase verification can be added later. |
+| `adapters/outbound/identity/` | Resolve identity through PostgreSQL-backed sessions in iteration 03. The initial development adapter remains an explicit local/test-only alternative. |
+| `frontend/` | React/TypeScript forms, session state, history, and streamed chat UI. Vite proxies same-origin API paths locally and builds static production assets. |
 | `adapters/outbound/rate_limit/` | Implement the rate-limit contract. The initial memory adapter is local-only. |
 | `migrations/` | Alembic environment and versioned database migrations. |
 | `tests/` | Focused application, HTTP, and PostgreSQL behavior tests. |
@@ -243,8 +254,10 @@ Preserve provider-reported usage when available and distinguish estimates or una
 ## Local development and delivery
 
 - Use Docker Compose to run the backend, frontend, and local PostgreSQL together.
-- Define a local authentication strategy during implementation; the Firebase Authentication emulator is a candidate.
+- Implement local username authentication in the existing Python/PostgreSQL stack; no Firebase Authentication emulator or cloud account is required for iteration 03.
+- Use same-origin browser requests through the Vite proxy locally and planned Firebase Hosting-to-Cloud Run API rewrites in deployment. Use `__session` for the HttpOnly authentication cookie so Hosting can forward it; validate production HTTPS, origin, cache, and CSRF settings before exposing it.
 - Keep application configuration environment-specific while reusing the same code.
+- Separate local settings into ignored `backend/.env` and `frontend/.env`, each with its committed example. Backend auth policies have defaults; override only what differs. `APP_ORIGIN` is the exact public frontend origin and is required to differ between local/staging/production. Frontend/API host port mappings are local Compose concerns; Firebase Hosting does not run a Vite server. Deployed HTTPS, secure cookies, credentials, and container routing are configured separately.
 - Manage infrastructure with Terraform and maintain its state securely outside the repository.
 - Use GitHub Actions for validation, tests, application builds, and deployment.
 - Build and publish the backend container image to Artifact Registry, then deploy it to Cloud Run.
@@ -274,7 +287,7 @@ This is a tentative roadmap grouped by working outcomes. Refine each iteration b
 | --- | --- | --- |
 | 01 — Initial backend setup | FastAPI, PostgreSQL/Alembic, ports and adapters, simulated async agent, streaming, coordination, and Docker Compose. Implemented locally. | A tested local backend with persisted conversations. |
 | 02 — OpenAI finance agent and tool readiness | OpenAI provider adapter, configurable model, finance-focused instructions, real streaming and usage/timing logs, and a bounded model/tools execution path. Register no concrete tools. | Local implementation; the user will perform the live provider check after adding an API key. |
-| 03 — Users and frontend | Firebase Authentication, registration/sign-in, and a minimal browser chat UI in the same repository. | Use the application from a browser with real user identity. |
+| 03 — Users and frontend | Implemented locally: username/password registration, display name, backend-validated revocable sessions/logout, React + TypeScript + Vite + Tailwind, streamed chat/history, and separate component env files. | Use the local application from a browser with real user identity and enforced conversation ownership. |
 | 04 — Google Cloud with Terraform | Cloud Run, Cloud SQL, Firebase Hosting, Secret Manager, permissions, secure remote Terraform state, and an initial deployment. Replace local-only coordination where needed; configure resources, logs, spending alerts, and production settings. | A first production environment provisioned with Terraform, initially deployed manually. |
 | 05 — GitHub Actions | Pull-request checks, image builds, short-lived Google Cloud authentication, database migrations, and controlled deployments. | Deliver changes through a repeatable CI/CD pipeline. |
 | 06 — Staging | Reuse infrastructure modules with separate configuration, data, and secrets; define promotion to production. | Two environments with a clear delivery workflow. |
@@ -288,10 +301,12 @@ Tools do not require RAG. Iteration 02 prepares the graph and OpenAI integration
 - Concrete tools and any RAG requirements.
 - Region and initial resource sizing.
 - Deployed lock backend, shared rate limiter, and numeric limits after measurement.
-- Real authentication and deployment workflow.
+- Deployment workflow and production configuration for the authentication design specified in iteration 03.
 
 Keep project-wide decisions in this file. Describe the scope and acceptance criteria of each iteration in a separate document under `specs/`.
 
 The first iteration is defined in [Iteration 01 — Initial Backend Setup](../specs/01-initial-backend-setup.md).
 
 The second iteration is described in [Iteration 02 — OpenAI Finance Agent](../specs/02-openai-finance-agent.md). Its normal tests run offline; live provider checks are separate.
+
+The third iteration is implemented in [Iteration 03 — Username Authentication and Chat UI](../specs/03-users-and-chat-ui.md). Deployment remains separate work.
