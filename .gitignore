@@ -16,3 +16,6 @@ dist/
 *.tfplan
 crash.log
 crash.*.log
+# Firebase CLI cache and local debug logs
+.firebase/
+firebase-debug.log*

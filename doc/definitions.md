@@ -1,6 +1,6 @@
 # Agent Chatbot on Google Cloud — Definitions
 
-Status: evolving project decisions. Iterations 01–03 implement the local backend, OpenAI integration, username authentication, and React chat UI. Iteration 04 is complete: the backend and PostgreSQL are deployed in Google Cloud and live/ready checks passed. Firebase Hosting is planned in iteration 05, GitHub Actions in 06, and staging in 07.
+Status: evolving project decisions. Iterations 01–03 implement the local backend, OpenAI integration, username authentication, and React chat UI. Iteration 04 deployed the backend and PostgreSQL with successful live/ready checks. Iteration 05 is functionally complete: Firebase Hosting is published and the user confirmed browser acceptance. Operational RAM/log/cost and rollback/teardown review remains pending. GitHub Actions is planned in 06 and staging in 07.
 
 ## Purpose
 
@@ -295,7 +295,7 @@ This is a tentative roadmap grouped by working outcomes. Refine each iteration b
 | 02 — OpenAI finance agent and tool readiness | OpenAI provider adapter, configurable model, finance-focused instructions, real streaming and usage/timing logs, and a bounded model/tools execution path. Register no concrete tools. | Local implementation; the user will perform the live provider check after adding an API key. |
 | 03 — Users and frontend | Implemented locally: username/password registration, display name, backend-validated revocable sessions/logout, React + TypeScript + Vite + Tailwind, streamed chat/history, and separate component env files. | Use the local application from a browser with real user identity and enforced conversation ownership. |
 | 04 — Google Cloud backend with Terraform | Complete: remote state, APIs, IAM, Artifact Registry, Secret Manager, Cloud SQL, IAM grants, migration job, and Cloud Run backend. | Backend deployed manually; the user verified live/ready HTTP 200 and PostgreSQL access. |
-| 05 — Firebase Hosting | Publish the existing frontend, configure Hosting-to-Cloud Run rewrites, verify browser auth/history/streaming and two-user isolation, and finish the brief operational handoff. | A working deployed browser application and documented inspection/manual release steps. See [specification](../specs/05-firebase-hosting.md). |
+| 05 — Firebase Hosting | Functionally complete: frontend published with Hosting-to-Cloud Run rewrites and browser acceptance confirmed by the user. RAM/log/cost and rollback/teardown review remains a separate operational follow-up. | A working deployed browser application and recorded manual release commands. See [specification](../specs/05-firebase-hosting.md). |
 | 06 — GitHub Actions | Pull-request checks, image builds, short-lived Google Cloud authentication, database migrations, and controlled deployments. | Deliver changes through a repeatable CI/CD pipeline. |
 | 07 — Staging | Reuse infrastructure modules with separate configuration, data, and secrets; define promotion to production. | Two environments with a clear delivery workflow. |
 | Optional — RAG | Define a knowledge source, ingestion/indexing, retrieval, and evaluation when the intended data and use case are known. | Answers grounded in the selected knowledge source. |

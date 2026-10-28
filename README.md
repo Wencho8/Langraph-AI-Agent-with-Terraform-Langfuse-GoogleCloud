@@ -185,5 +185,5 @@ Alembic migrations live in `backend/migrations/`, including `0003_auth_sessions`
 - [Iteration 02](specs/02-openai-finance-agent.md)
 - [Iteration 03](specs/03-users-and-chat-ui.md)
 - [Iteration 04 — Guided Google Cloud Backend Deployment (complete)](specs/04-guided-google-cloud-deployment.md)
-- [Iteration 05 — Firebase Hosting (planned)](specs/05-firebase-hosting.md)
+- [Iteration 05 — Firebase Hosting (functionally complete; operational follow-ups pending)](specs/05-firebase-hosting.md)
 - [Short request/concurrency flow](doc/request-flow.md)
