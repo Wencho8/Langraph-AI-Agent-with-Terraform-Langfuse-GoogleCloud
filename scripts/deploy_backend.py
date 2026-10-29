@@ -53,9 +53,17 @@ def deploy(args):
     gcloud(args, "services", "update", args.service, "--image=" + args.image,
            "--revision-suffix=" + args.suffix, "--no-traffic")
     current = gcloud(args, "services", "describe", args.service)
-    if (serving_revision(current) != old_revision
-            or current["status"].get("latestReadyRevisionName") != candidate):
-        raise RuntimeError("Service changed during deployment; refusing to promote over another release")
+    actual_serving = serving_revision(current)
+    if actual_serving != old_revision:
+        raise RuntimeError(f"Traffic changed during deployment: expected {old_revision}, got {actual_serving}; "
+                           "refusing to promote over another release")
+    # With --no-traffic a scale-to-zero revision may be Retired and the service's
+    # latestReadyRevisionName may still refer to the serving revision. Check the
+    # revision we created; activation and readiness are verified after promotion.
+    actual_created = current["status"].get("latestCreatedRevisionName")
+    if actual_created != candidate:
+        raise RuntimeError(f"Latest created revision changed: expected {candidate}, got {actual_created}; "
+                           "refusing to promote over another release")
 
     try:
         # Pin an explicit revision so an overlapping LATEST update is not promoted.

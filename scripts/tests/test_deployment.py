@@ -41,7 +41,8 @@ class FakeCloud:
             if self.fail == "rollback" and revision == OLD:
                 raise subprocess.CalledProcessError(1, "fake rollback")
             self.serving = revision
-        return {"status": {"url": "https://backend.invalid", "latestReadyRevisionName": self.latest,
+        return {"status": {"url": "https://backend.invalid", "latestCreatedRevisionName": self.latest,
+                           "latestReadyRevisionName": self.serving,
                            "traffic": [{"revisionName": self.serving, "percent": 100}]}}
 
 
@@ -83,6 +84,38 @@ class ReleaseTests(unittest.TestCase):
                 self.run_release(cloud, check)
         self.assertEqual(cloud.serving, OLD)
         self.assertFalse(any("downgrade" in str(cmd) for cmd in cloud.commands))
+
+    def test_retired_no_traffic_candidate_does_not_need_to_be_latest_ready(self):
+        cloud = FakeCloud()
+        snapshots = []
+
+        def observed(args, *command):
+            result = cloud(args, *command)
+            if command[:2] == ("services", "describe") and cloud.latest == NEW and cloud.serving == OLD:
+                result["status"]["conditions"] = [
+                    {"type": "ConfigurationsReady", "status": "True", "reason": "Retired"},
+                ]
+                snapshots.append(result)
+            return result
+
+        self.run_release(observed)
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]["status"]["latestCreatedRevisionName"], NEW)
+        self.assertEqual(snapshots[0]["status"]["latestReadyRevisionName"], OLD)
+        self.assertEqual(cloud.serving, NEW)
+
+    def test_changed_traffic_before_promotion_reports_the_actual_conflict(self):
+        cloud = FakeCloud()
+
+        def changed(args, *command):
+            result = cloud(args, *command)
+            if command[:2] == ("services", "update"):
+                cloud.serving = "chatbot-backend-another-release"
+            return result
+
+        with self.assertRaisesRegex(RuntimeError, "Traffic changed during deployment"):
+            self.run_release(changed)
+        self.assertFalse(any(cmd[:2] == ("services", "update-traffic") for cmd in cloud.commands))
 
     def test_newer_candidate_detected_before_promotion_is_not_overwritten(self):
         cloud = FakeCloud("overlap")
