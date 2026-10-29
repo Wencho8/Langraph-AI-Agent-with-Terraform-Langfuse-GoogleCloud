@@ -107,15 +107,20 @@ class ChatExecution:
             "calls": self.calls, "usage": aggregate_usage(self.calls, self.model_calls),
         }
 
-    async def _watch_lock(self):
-        while True:
+    async def _watch_lock(self, stop: asyncio.Event):
+        while not stop.is_set():
             await self.check()
-            await asyncio.sleep(0.5)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=0.5)
+            except TimeoutError:
+                pass
 
     async def _chunks(self) -> AsyncIterator[AgentEvent]:
         """Race each model chunk with lock loss; always stop children before unlocking."""
-        watcher = asyncio.create_task(self._watch_lock())
+        stop = asyncio.Event()
+        watcher = asyncio.create_task(self._watch_lock(stop))
         next_chunk = None
+        finished = False
         request = AgentRequest(self.user, self.history, self.deadline, self.check)
         async with aclosing(self.owner.agent.stream(request)) as stream:
             try:
@@ -127,12 +132,20 @@ class ChatExecution:
                     try:
                         yield next_chunk.result()
                     except StopAsyncIteration:
+                        finished = True
                         break
             finally:
                 children = [task for task in (next_chunk, watcher) if task is not None]
+                # A successful stream must let an in-flight DB check finish.
+                # Cancelling its query can invalidate the connection that holds
+                # the session lock, causing the final access check to fail.
+                stop.set()
                 for task in children:
-                    task.cancel()
+                    if task is not watcher or not finished:
+                        task.cancel()
                 await asyncio.gather(*children, return_exceptions=True)
+                if finished:
+                    watcher.result()  # Preserve lock/access failures during shutdown.
 
     async def events(self) -> AsyncIterator[ChatEvent]:
         identifiers = {

@@ -27,6 +27,47 @@ async def test_real_locks_coordinate_independent_connection_pools(database):
         await other.close()
 
 
+async def test_fast_completion_does_not_cancel_an_inflight_lock_query(database):
+    import asyncio
+    from chatbot.domain.agent import AgentCompleted
+    from chatbot.domain.models import UserProfile
+    from tests.test_orchestrator import orchestrator, consume
+
+    db, _ = database
+    user = UserProfile(DEVELOPMENT_USERS['alice'], 'Alice')
+    lease = await PostgresConversationLock(db).acquire(user.id)
+    checking = asyncio.Event()
+    original_check = lease.check
+
+    async def delayed_check():
+        checking.set()
+        # Simulate a real query still in flight when the model finishes.
+        await lease.connection.execute(text('SELECT pg_sleep(0.05)'))
+        await original_check()
+
+    lease.check = delayed_check
+
+    class Locks:
+        async def acquire(self, user_id):
+            return lease
+
+    class FastAgent:
+        provider, model_name, prompt_revision = 'test', 'fast', 'fixture'
+
+        async def stream(self, request):
+            await checking.wait()
+            yield AgentCompleted('Answer', (), {})
+
+    service, _, _ = orchestrator()
+    service.locks, service.agent = Locks(), FastAgent()
+    try:
+        events = await consume(await service.open(user, 'hello', 'race-regression'))
+        assert events[-1].kind == 'completed', events[-1].data
+        assert service.active == 0
+    finally:
+        await lease.release()
+
+
 async def test_migrated_schema_persistence_and_unique_conversation(database):
     db, _ = database
     repository = PostgresConversationRepository(db)

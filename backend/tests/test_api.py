@@ -99,7 +99,7 @@ async def test_mocked_openai_http_persistence_profiles_history_and_failure(datab
         assert harness.requests == []
         alice, bob = {"X-Dev-User-Id": "alice"}, {"X-Dev-User-Id": "bob"}
         first = frames(await client.post("/v1/chat/messages", headers=alice, json={"message": "PRIVATE_CHAT_BODY"}))
-        assert first[-1][0] == "completed"
+        assert first[-1][0] == "completed", first[-1]
         metadata = first[-1][1]["metadata"]
         assert metadata["usage"]["total_tokens"] == 15
         assert metadata["model_calls"] == 1 and metadata["tool_calls"] == 0
