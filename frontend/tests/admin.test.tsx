@@ -22,10 +22,10 @@ it('pending registration stays at access form and never enters the chat', async 
   expect(screen.getByRole('button', { name: 'Iniciar sesión' })).toBeInTheDocument()
 })
 
-it('admin approval posts only the blocked field with CSRF', async () => {
-  const session: Session = { user: { id: 'admin', display_name: 'Admin', username: 'admin', is_admin: true }, csrf_token: 'csrf', expires_at: '' }
+it('admin approval posts only the blocked field using the shared API client', async () => {
+  const session: Session = { user: { id: 'admin', display_name: 'Admin', username: 'admin', is_admin: true }, expires_at: '' }
   mockedApi.mockResolvedValue([{ id: 'pending-id', display_name: 'Pending', username: 'pending', blocked: true, is_admin: false }])
   render(<AdminUsers session={session} onExpired={vi.fn()} />)
   fireEvent.click(await screen.findByRole('button', { name: 'Aprobar' }))
-  await waitFor(() => expect(mockedApi).toHaveBeenCalledWith('/auth/admin/users/pending-id/access', { method: 'POST', csrf: 'csrf', body: { blocked: false } }))
+  await waitFor(() => expect(mockedApi).toHaveBeenCalledWith('/auth/admin/users/pending-id/access', { method: 'POST', body: { blocked: false } }))
 })

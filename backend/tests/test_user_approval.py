@@ -60,16 +60,16 @@ async def test_admin_approval_blocking_revocation_and_role_rechecks(database):
         listed = await admin.get('/v1/auth/admin/users')
         assert listed.status_code == 200 and len(listed.json()) == 2
         assert all('password_hash' not in row for row in listed.json())
-        assert (await admin.post(endpoint, headers={'X-CSRF-Token': ''}, json={'blocked': True})).status_code == 403
+        assert (await admin.post(endpoint, headers={'Origin': 'https://untrusted.test'}, json={'blocked': True})).status_code == 403
         assert (await admin.post(endpoint, json={'blocked': True, 'is_admin': True})).status_code == 422
         self_url = '/v1/auth/admin/users/' + actor_id + '/access'
         assert (await admin.post(self_url, json={'blocked': True})).status_code == 403
-        old_cookie = user.cookies['__session']
+        old_token = user.headers['Authorization']
         assert (await admin.post(endpoint, json={'blocked': True})).status_code == 204
         assert (await user.get('/v1/chat/messages')).status_code == 401
         assert (await user.post('/v1/chat/messages', json={'message': 'must not call model'})).status_code == 401
         assert (await admin.post(endpoint, json={'blocked': False})).status_code == 204
-        assert (await user.get('/v1/auth/session', headers={'Cookie': '__session=' + old_cookie})).status_code == 401
+        assert (await user.get('/v1/auth/session', headers={'Authorization': old_token})).status_code == 401
         assert (await user.post('/v1/auth/login', json={'username': 'ordinary', 'password': PASSWORD})).status_code == 200
         async with db.session() as sql, sql.begin():
             await sql.execute(update(User).where(User.username == 'administrator').values(is_admin=False))

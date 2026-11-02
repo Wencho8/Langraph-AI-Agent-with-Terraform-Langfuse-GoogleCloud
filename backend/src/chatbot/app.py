@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from chatbot.adapters.inbound.http.routes import application_error, router
 from chatbot.adapters.inbound.http.auth_routes import AuthBodyLimit, router as auth_router
@@ -104,6 +105,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                       duration_ms=round((monotonic() - started) * 1000, 2))
         return response
 
+    app.add_middleware(
+        CORSMiddleware, allow_origins=[settings.app_origin],
+        allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"],
+        expose_headers=["X-Request-ID"],
+    )
     app.include_router(router)
     app.include_router(auth_router)
     return app

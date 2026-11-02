@@ -1,3 +1,4 @@
+import { fetchApi } from './transport'
 import { ApiError, responseError, type ChartBlock, type MessageBlock } from './client'
 
 export type ToolStep = { id: string; name: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; duration_ms?: number }
@@ -44,10 +45,10 @@ export async function readEvents(body: ReadableStream<Uint8Array>, onEvent: (eve
   }
 }
 
-export async function streamChat(message: string, csrf: string, signal: AbortSignal, onEvent: (event: ChatEvent) => void) {
-  const response = await fetch('/v1/chat/messages', {
-    method: 'POST', credentials: 'same-origin', signal,
-    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+export async function streamChat(message: string, signal: AbortSignal, onEvent: (event: ChatEvent) => void) {
+  const response = await fetchApi('/chat/messages', {
+    method: 'POST', signal,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message }),
   })
   if (!response.ok) throw await responseError(response)

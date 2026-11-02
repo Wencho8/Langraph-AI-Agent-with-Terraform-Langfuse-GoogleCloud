@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError, errorMessage, type Session } from './api/client'
 import AuthForm from './auth/AuthForm'
+import { clearToken, getToken } from './api/transport'
 import Chat from './chat/Chat'
 import AdminUsers from './admin/AdminUsers'
 
@@ -11,12 +12,13 @@ export default function App() {
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
   const epoch = useRef(0)
-  const expire = useCallback(() => { epoch.current++; setSession(null); setAdminView(false); setError('') }, [])
+  const expire = useCallback(() => { clearToken(); epoch.current++; setSession(null); setAdminView(false); setError('') }, [])
 
   useEffect(() => {
     const controller = new AbortController()
     const version = ++epoch.current
     setLoading(true); setError('')
+    if (!getToken()) { setSession(null); setLoading(false); return () => controller.abort() }
     api<Session>('/auth/session', { signal: controller.signal }).then(session => {
       if (version === epoch.current) setSession(session)
     }).catch(error => {

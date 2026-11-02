@@ -1,6 +1,7 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { api, errorMessage, type Session } from '../api/client'
 import Icon from '../Icon'
+import { saveToken } from '../api/transport'
 
 export default function AuthForm({ onLogin }: { onLogin: (session: Session) => void }) {
   const [register, setRegister] = useState(false)
@@ -16,12 +17,13 @@ export default function AuthForm({ onLogin }: { onLogin: (session: Session) => v
     if (register && password !== form.get('confirmation')) { setError('Las contraseñas no coinciden.'); return }
     submitting.current = true; setBusy(true); setError('')
     try {
-      const session = await api<Session | { status: 'pending_approval'; message: string }>(register ? '/auth/register' : '/auth/login', {
+      const session = await api<(Session & { access_token: string }) | { status: 'pending_approval'; message: string }>(register ? '/auth/register' : '/auth/login', {
         method: 'POST', body: { username: form.get('username'), password,
           ...(register ? { display_name: form.get('name'), password_confirmation: form.get('confirmation') } : {}) },
       })
       if ('status' in session) { setRegister(false); setError(session.message); return }
-      onLogin(session)
+      saveToken(session.access_token)
+      onLogin({ user: session.user, expires_at: session.expires_at })
     } catch (error) { setError(errorMessage(error)) }
     finally { submitting.current = false; setBusy(false) }
   }

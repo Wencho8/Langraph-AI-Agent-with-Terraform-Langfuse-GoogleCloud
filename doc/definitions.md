@@ -28,7 +28,7 @@ The chatbot's initial domain is personal finance and financial education. It sho
 | First real model provider | OpenAI Responses via the async SDK; configurable model, initially `gpt-6.1-terra` |
 | Frontend | React + TypeScript + Vite + Tailwind CSS in `frontend/`; minimal auth/chat screens titled "Chatbot de finanzas" |
 | Frontend hosting | Firebase Hosting |
-| Authentication | Username/password verified in FastAPI; Argon2id password hashes and revocable PostgreSQL sessions in HttpOnly cookies; no email or Firebase Authentication |
+| Authentication | Username/password verified in FastAPI; Argon2id password hashes and revocable PostgreSQL sessions sent as Bearer tokens; no email or Firebase Authentication |
 | Database | PostgreSQL; local PostgreSQL during development and Cloud SQL for PostgreSQL in Google Cloud |
 | Database access and migrations | Async SQLAlchemy with asyncpg, and Alembic migrations |
 | Local environment | Docker Compose |
@@ -63,7 +63,7 @@ The backend uses Python 3.13 with dependencies pinned in `backend/uv.lock`. The 
 
 The frontend should be intentionally simple. Authentication is a supporting feature, not the focus of the project.
 
-The backend derives identity from a validated, unexpired, unrevoked session cookie. The username identifies the login account; the existing display name is what the LLM receives as profile context. Every conversation read, write, and execution must be authorized for that user. Cookie-based mutations require origin/CSRF protection; development identity never acts as a fallback in session mode.
+The backend derives identity from a validated, unexpired, unrevoked Bearer session token. The browser stores it per-tab in sessionStorage. The username identifies the login account; the existing display name is what the LLM receives as profile context. Every conversation read, write, and execution must be authorized for that user. Mutations require the configured origin and JSON; CORS allows that exact frontend origin and the Authorization header. Cookie authentication is not accepted; development identity never acts as a fallback in session mode.
 
 During generation the composer/send action is disabled, and terminal events/errors release it. Server-side conversation locks remain authoritative across tabs/devices. Session restore loads the signed-in user's history; user switching must never retain the previous user's messages.
 
@@ -261,9 +261,9 @@ Preserve provider-reported usage when available and distinguish estimates or una
 
 - Use Docker Compose to run the backend, frontend, and local PostgreSQL together.
 - Implement local username authentication in the existing Python/PostgreSQL stack; no Firebase Authentication emulator or cloud account is required for iteration 03.
-- Use same-origin browser requests through the Vite proxy locally and planned Firebase Hosting-to-Cloud Run API rewrites in deployment. Use `__session` for the HttpOnly authentication cookie so Hosting can forward it; validate production HTTPS, origin, cache, and CSRF settings before exposing it.
+- Use the Vite proxy locally and direct Cloud Run API requests in production. Firebase serves static frontend files only. Use opaque Bearer sessions, exact-origin CORS and no-store private responses. See [direct API flow](direct-api.md).
 - Keep application configuration environment-specific while reusing the same code.
-- Separate local settings into ignored `backend/.env` and `frontend/.env`, each with its committed example. Backend auth policies have defaults; override only what differs. `APP_ORIGIN` is the exact public frontend origin and is required to differ between local/staging/production. Frontend/API host port mappings are local Compose concerns; Firebase Hosting does not run a Vite server. Deployed HTTPS, secure cookies, credentials, and container routing are configured separately.
+- Separate local settings into ignored `backend/.env` and `frontend/.env`, each with its committed example. Backend auth policies have defaults; override only what differs. `APP_ORIGIN` is the exact public frontend origin and is required to differ between local/staging/production. Frontend/API host port mappings are local Compose concerns; Firebase Hosting does not run a Vite server. Deployed HTTPS, CORS, credentials, and container routing are configured separately.
 - Manage infrastructure with Terraform and maintain its state securely outside the repository.
 - Use GitHub Actions for validation, tests, application builds, and deployment.
 - Build and publish the backend container image to Artifact Registry, then deploy it to Cloud Run.

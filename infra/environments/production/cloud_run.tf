@@ -3,7 +3,6 @@ locals {
     APP_ENV                 = "production"
     AUTH_MODE               = "session"
     APP_ORIGIN              = var.frontend_origin
-    SESSION_COOKIE_SECURE   = "true"
     DATABASE_MODE           = "cloud_sql"
     CLOUD_SQL_INSTANCE      = google_sql_database_instance.chatbot.connection_name
     DATABASE_NAME           = google_sql_database.chatbot.name
@@ -130,7 +129,7 @@ resource "google_cloud_run_v2_service" "backend" {
 }
 
 # Google IAM permits browser requests; FastAPI still enforces sessions, ownership,
-# exact origin, and CSRF for the application endpoints. This grants no SQL access.
+# exact origin, and Bearer sessions for the application endpoints. This grants no SQL access.
 resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
   project  = var.project_id
   location = var.region

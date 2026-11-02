@@ -23,7 +23,7 @@ If a local port is occupied, change `API_PORT` in `backend/.env` or `FRONTEND_PO
 ## Configuration by component and environment
 
 - `backend/.env` / `backend/.env.example`: authentication, session policy, model/key, database and local API/Compose configuration. The real file is ignored and excluded from the Docker build.
-- `frontend/.env` / `frontend/.env.example`: local frontend port. API requests use the same-origin `/v1` path. Frontend configuration must never contain server secrets; any future `VITE_*` values are public build inputs.
+- `frontend/.env` / `frontend/.env.example`: local frontend port. An empty `VITE_API_BASE_URL` uses the local Vite proxy; production builds set it to the public Cloud Run origin. Frontend configuration must never contain server secrets; any future `VITE_*` values are public build inputs.
 - Make passes both files explicitly to Compose; the root `.env` is no longer used.
 
 | Setting | Local development | Future staging/production |
@@ -32,11 +32,10 @@ If a local port is occupied, change `API_PORT` in `backend/.env` or `FRONTEND_PO
 | `API_PORT` | Host mapping to backend container, default `8088` | Not used as a host port; Cloud Run routes to the container port (currently `8080`) |
 | `APP_ORIGIN` | Backend validates `http://localhost:5173` | Set the actual frontend HTTPS origin separately for each environment |
 | `APP_ENV` / `AUTH_MODE` | `local` / `session` | `production` / `session`; development identity is refused |
-| `SESSION_COOKIE_SECURE` | `false` only for local HTTP | Must be `true` |
 | Session lifetime/auth limits | Defaults work; override only when needed | Configurable policy; no need to redeclare unchanged defaults |
 | Model/database credentials | Ignored backend env file | Secret Manager/runtime configuration, never frontend files |
 
-Production configuration rejects an HTTP origin, insecure cookie, or development identity. Cloud resources and deployment configuration are not provisioned by this iteration.
+Production configuration rejects an HTTP origin or development identity. Cloud resources and deployment configuration are not provisioned by this iteration.
 
 ### PostgreSQL local and Cloud SQL connections
 
@@ -90,7 +89,7 @@ make logout
 
 Events: `started`, one or more `delta` events, then `completed` after the final response is committed. A failure after streaming starts produces `error`; HTTP 200 alone does not mean the turn succeeded. Failures before streaming use HTTP error statuses.
 
-The CLI keeps a private, ignored `.local/cookies.txt` file; passwords are prompted, not passed in command arguments. Browser and CLI login sessions are independent. Auth endpoints are `/v1/auth/register`, `/login`, `/session`, `/logout`. Session restore returns the public user and a CSRF token; the HttpOnly authentication cookie is never returned in JSON. Mutations require the exact configured Origin, JSON, and the active session's CSRF header.
+The CLI keeps a private, ignored `.local/session.json` token file (0600); passwords are prompted, not passed in command arguments. Browser and CLI login sessions are independent. Auth endpoints are `/v1/auth/register`, `/login`, `/session`, `/logout`. Login returns an opaque session token, sent using `Authorization: Bearer`. Mutations require the exact configured Origin and JSON. Cookies and browser CSRF headers are no longer used.
 
 `GET /v1/chat/messages` reads only the session user's history. Request bodies cannot select ownership. Every saved message is passed to the graph on subsequent turns. Session mode never falls back to development headers.
 
@@ -126,7 +125,7 @@ The XML lives in `backend/src/chatbot/prompts/finance.xml`. It is loaded from th
 
 ## Sessions and development identity
 
-Normal mode is `AUTH_MODE=session`: Argon2id password verification, a 24-hour absolute session by default, and an opaque `__session` HttpOnly/SameSite cookie with only its verifier stored in PostgreSQL. Logout revokes that session on the server; other devices' sessions remain valid. Session validity is checked during generation on the existing 0.5-second watchdog with a bounded two-second database check. Detection includes scheduling/I/O delay; upstream cancellation is not instantaneous. Password work runs off the event loop with at most two admitted operations.
+Normal mode is `AUTH_MODE=session`: Argon2id password verification, a 24-hour absolute session by default, and an opaque Bearer session token with only its verifier stored in PostgreSQL. Logout revokes that session on the server; other devices' sessions remain valid. Session validity is checked during generation on the existing 0.5-second watchdog with a bounded two-second database check. Detection includes scheduling/I/O delay; upstream cancellation is not instantaneous. Password work runs off the event loop with at most two admitted operations.
 
 Login is limited to 10 attempts per minute per IP and username; registration to 5 per minute per IP. Limits are process-local and reset on restart. The local frontend proxy shares one source IP, so those IP limits are shared by local browser clients. Forwarded IP headers are not trusted; proxy clients may also share an IP limit in the cloud. Review trusted forwarding during deployment. Shared limits are deferred for this personal trial. Recovery/MFA/password changes and automatic expired-session cleanup are deferred.
 
@@ -160,7 +159,7 @@ backend/src/chatbot/
 
 One OpenAI adapter call performs one Responses request. LangGraph owns repeated model/tool rounds. Successful turns preserve an ordered provider transcript alongside canonical user/assistant text, including tool IDs and opaque continuation items. Loading history replays those items as model context without executing historical handlers or duplicating assistant text. Requests send full history with `store=false` and no provider-side conversation ID. This setting does not describe all provider retention policies.
 
-The React/Tailwind UI lives in `frontend/src/{auth,chat,api}`. Vite proxies `/v1` to the backend locally; `npm run build` creates static assets without a production Vite server. Assistant messages render Markdown during streaming and from history, including emphasis, lists, code, and tables. Raw HTML and images are disabled; links retain safe URL handling. User messages remain escaped text. No authentication tokens are stored in browser local/session storage. The planned Hosting rewrite forwards the specially named `__session` cookie; private API responses use `Cache-Control: no-store`.
+The React/Tailwind UI lives in `frontend/src/{auth,chat,api}`. Vite proxies `/v1` to the backend locally; `npm run build` creates static assets without a production Vite server. Assistant messages render Markdown during streaming and from history, including emphasis, lists, code, and tables. Raw HTML and images are disabled; links retain safe URL handling. User messages remain escaped text. The browser keeps its token in `sessionStorage` (per-tab, reload-safe), clearing it on logout/expiration. Firebase serves static files only; production API/SSE calls go directly to Cloud Run using exact-origin CORS. Private API responses use `Cache-Control: no-store`. See [direct API deployment](doc/direct-api.md).
 
 Alembic migrations live in `backend/migrations/`, including `0003_auth_sessions`. Python 3.13 dependencies are managed by uv; frontend dependencies use Node 24 and `package-lock.json`. Tests are included in these development images; production images and cloud configuration come later.
 

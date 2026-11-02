@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+# Public build input, overridable with a repository Actions variable.
+env:
+  VITE_API_BASE_URL: ${{ vars.API_BASE_URL || 'https://chatbot-backend-dasag4h7iq-uc.a.run.app' }}
+
 # OIDC is granted only to the main-branch deploy job. No global concurrency lock.
 jobs:
   backend:
@@ -193,9 +197,9 @@ jobs:
         run: >-
           npx --yes --package="firebase-tools@$FIREBASE_CLI_VERSION" --
           firebase deploy --only hosting --project "$CLOUD_PROJECT" --non-interactive
-      - name: Verify published frontend assets and API routing
+      - name: Verify published frontend assets and direct API/CORS
         if: steps.changes.outputs.frontend == 'true'
-        run: python scripts/check_deployment.py --frontend-url "$FRONTEND_URL"
+        run: python scripts/check_deployment.py --frontend-url "$FRONTEND_URL" --api-url "$VITE_API_BASE_URL"
       - name: Release summary
         if: always()
         env:

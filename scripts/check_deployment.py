@@ -8,9 +8,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-def request(url):
+def request(url, *, method="GET", headers=None):
     try:
-        with urlopen(Request(url, headers={"Cache-Control": "no-cache"}), timeout=15) as response:
+        with urlopen(Request(url, method=method, headers={"Cache-Control": "no-cache", **(headers or {})}), timeout=15) as response:
             return response.status, response.headers, response.read(1_000_000).decode()
     except HTTPError as response:
         return response.code, response.headers, response.read(1_000_000).decode()
@@ -32,7 +32,7 @@ def ready(url):
     assert status == 200 and json.loads(body).get("status") == "ready", "Backend is not ready"
 
 
-def frontend(url, index):
+def frontend(url, index, api_url):
     status, headers, body = request(url.rstrip("/") + "/")
     assert status == 200 and "text/html" in headers.get("Content-Type", ""), "Frontend HTML unavailable"
     # Match this run's Vite bundle, not merely any old HTML returning HTTP 200.
@@ -42,20 +42,30 @@ def frontend(url, index):
         assert asset in body, "Hosting has not served this build's index.html"
         asset_status, asset_headers, _ = request(url.rstrip("/") + asset)
         assert asset_status == 200 and "text/html" not in asset_headers.get("Content-Type", ""), "Missing frontend asset"
-    status, headers, body = request(url.rstrip("/") + "/v1/auth/session")
-    assert status == 401 and json.loads(body).get("code") == "unauthenticated", "API rewrite did not reach authentication"
+    status, headers, body = request(api_url.rstrip("/") + "/v1/auth/session", headers={"Origin": url.rstrip("/")})
+    assert status == 401 and json.loads(body).get("code") == "unauthenticated", "Direct API did not reach authentication"
     assert "no-store" in headers.get("Cache-Control", ""), "Private response is cacheable"
+    assert headers.get("Access-Control-Allow-Origin") == url.rstrip("/"), "API CORS origin mismatch"
+    status, headers, _ = request(api_url.rstrip("/") + "/v1/chat/messages", method="OPTIONS", headers={
+        "Origin": url.rstrip("/"), "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type",
+    })
+    assert status == 200 and headers.get("Access-Control-Allow-Origin") == url.rstrip("/"), "API CORS preflight failed"
+    assert "authorization" in headers.get("Access-Control-Allow-Headers", "").lower(), "Bearer header not allowed"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend-url")
     parser.add_argument("--frontend-url")
+    parser.add_argument("--api-url", help="Public API origin used by the published frontend")
     parser.add_argument("--index", default="frontend/dist/index.html")
     args = parser.parse_args()
     if bool(args.backend_url) == bool(args.frontend_url):
         parser.error("Select exactly one of --backend-url or --frontend-url")
-    retry(lambda: ready(args.backend_url) if args.backend_url else frontend(args.frontend_url, args.index))
+    if args.frontend_url and not args.api_url:
+        parser.error("--frontend-url requires --api-url")
+    retry(lambda: ready(args.backend_url) if args.backend_url else frontend(args.frontend_url, args.index, args.api_url))
     print("Deployment smoke check passed; no model calls were made.")
 
 

@@ -1,5 +1,3 @@
-import secrets
-
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -9,7 +7,16 @@ from chatbot.domain.errors import Forbidden, Unauthorized
 from .auth_schemas import Login, Register
 
 router = APIRouter(prefix="/v1/auth", tags=["authentication"])
-COOKIE = "__session"
+
+
+def request_token(request: Request) -> str | None:
+    header = request.headers.get("authorization")
+    if header is None:
+        return None
+    parts = header.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise Unauthorized()
+    return parts[1]
 
 
 class AuthBodyLimit:
@@ -38,27 +45,12 @@ async def mutation_guard(request: Request):
     if (request.headers.get("origin") != request.app.state.settings.app_origin
             or request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json"):
         raise Forbidden()
-    session = await request.app.state.auth.optional(request.cookies.get(COOKIE))
-    if session is None and request.app.state.settings.auth_mode == "session" and request.url.path == "/v1/chat/messages":
-        raise Unauthorized()
-    if session is not None:
-        csrf = request.headers.get("x-csrf-token", "")
-        if not secrets.compare_digest(csrf.encode(), session.csrf_token.encode()):
-            raise Forbidden()
-    request.state.auth_session = session
 
 
 def session_body(session):
     return {"user": {"id": str(session.user.id), "display_name": session.user.display_name,
-                     "username": session.username, "is_admin": session.is_admin}, "csrf_token": session.csrf_token,
+                     "username": session.username, "is_admin": session.is_admin},
             "expires_at": session.expires_at.isoformat()}
-
-
-def set_session(response: Response, request: Request, grant):
-    settings = request.app.state.settings
-    response.set_cookie(COOKIE, grant.token, max_age=settings.session_ttl_seconds,
-                        expires=grant.session.expires_at, httponly=True,
-                        secure=settings.session_cookie_secure, samesite="lax", path="/")
 
 
 def client_key(request):
@@ -67,35 +59,33 @@ def client_key(request):
 
 
 @router.post("/register", status_code=201, dependencies=[Depends(mutation_guard)])
-async def register(payload: Register, request: Request, response: Response):
+async def register(payload: Register, request: Request):
     await request.app.state.auth.register(
         payload.display_name, payload.username, payload.password.get_secret_value(),
-        client_key(request), request.cookies.get(COOKIE),
+        client_key(request), request_token(request),
     )
     return {"status": "pending_approval", "message": "Cuenta creada. Un administrador debe aprobarla antes de que puedas ingresar."}
 
 
 @router.post("/login", dependencies=[Depends(mutation_guard)])
-async def login(payload: Login, request: Request, response: Response):
+async def login(payload: Login, request: Request):
     grant = await request.app.state.auth.login(
-        payload.username, payload.password.get_secret_value(), client_key(request), request.cookies.get(COOKIE),
+        payload.username, payload.password.get_secret_value(), client_key(request), request_token(request),
     )
-    set_session(response, request, grant)
-    return session_body(grant.session)
+    return {**session_body(grant.session), "access_token": grant.token, "token_type": "Bearer"}
 
 
 @router.get("/session")
 async def session(request: Request):
-    return session_body(await request.app.state.auth.resolve(request.cookies.get(COOKIE)))
+    return session_body(await request.app.state.auth.resolve(request_token(request)))
 
 
 @router.post("/logout", status_code=204, dependencies=[Depends(mutation_guard)])
 async def logout(request: Request):
-    await request.app.state.auth.logout(request.cookies.get(COOKIE))
-    response = Response(status_code=204)
-    response.delete_cookie(COOKIE, path="/", httponly=True,
-                           secure=request.app.state.settings.session_cookie_secure, samesite="lax")
-    return response
+    token = request_token(request)
+    await request.app.state.auth.resolve(token)
+    await request.app.state.auth.logout(token)
+    return Response(status_code=204)
 
 
 class BlockAccount(BaseModel):
@@ -105,10 +95,10 @@ class BlockAccount(BaseModel):
 
 @router.get("/admin/users")
 async def admin_users(request: Request, offset: int = Query(default=0, ge=0, le=1000000)):
-    return await request.app.state.auth.list_accounts(request.cookies.get(COOKIE), offset)
+    return await request.app.state.auth.list_accounts(request_token(request), offset)
 
 
 @router.post("/admin/users/{user_id}/access", status_code=204, dependencies=[Depends(mutation_guard)])
 async def admin_access(user_id: UUID, payload: BlockAccount, request: Request):
-    await request.app.state.auth.set_blocked(request.cookies.get(COOKIE), user_id, payload.blocked)
+    await request.app.state.auth.set_blocked(request_token(request), user_id, payload.blocked)
     return Response(status_code=204)

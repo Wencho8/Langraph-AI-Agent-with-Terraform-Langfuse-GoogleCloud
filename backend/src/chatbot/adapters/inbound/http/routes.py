@@ -7,14 +7,14 @@ from chatbot.domain.errors import ChatError, Unavailable
 from chatbot.domain.models import UserProfile
 from .schemas import MessageResponse, SendMessage
 from .streaming import ChatStreamingResponse
-from .auth_routes import COOKIE, mutation_guard
+from .auth_routes import request_token, mutation_guard
 
 router = APIRouter()
 
 
 async def current_user(request: Request, x_dev_user_id: str | None = Header(default=None)) -> UserProfile:
     if request.app.state.settings.auth_mode == "session":
-        session = await request.app.state.auth.resolve(request.cookies.get(COOKIE))
+        session = await request.app.state.auth.resolve(request_token(request))
         request.state.auth_session = session
         return session.user
     return await request.app.state.identity.resolve(x_dev_user_id)

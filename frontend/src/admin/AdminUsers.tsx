@@ -26,7 +26,7 @@ export default function AdminUsers({ session, onExpired }: { session: Session; o
     setBusy(true); setError('')
     try {
       await api('/auth/admin/users/' + user.id + '/access', { method: 'POST',
-        csrf: session.csrf_token, body: { blocked: !user.blocked } })
+        body: { blocked: !user.blocked } })
       setRevision(value => value + 1)
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) onExpired()

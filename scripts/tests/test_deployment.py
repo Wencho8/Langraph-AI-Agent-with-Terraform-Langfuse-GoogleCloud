@@ -166,18 +166,20 @@ class SelectionTests(unittest.TestCase):
 
 
 class SmokeTests(unittest.TestCase):
-    def test_frontend_checks_the_build_assets_rewrite_and_private_cache_policy(self):
+    def test_frontend_checks_assets_direct_api_cors_and_private_cache_policy(self):
         with TemporaryDirectory() as directory:
             index = Path(directory) / "index.html"
             index.write_text('<script src="/assets/current.js"></script>')
             responses = [
                 (200, {"Content-Type": "text/html"}, index.read_text()),
                 (200, {"Content-Type": "text/javascript"}, "bundle"),
-                (401, {"Cache-Control": "no-store"}, '{"code":"unauthenticated"}'),
+                (401, {"Cache-Control": "no-store", "Access-Control-Allow-Origin": "https://frontend.invalid"}, '{"code":"unauthenticated"}'),
+                (200, {"Access-Control-Allow-Origin": "https://frontend.invalid", "Access-Control-Allow-Headers": "Authorization, Content-Type"}, "OK"),
             ]
             with patch.object(smoke, "request", side_effect=responses) as request:
-                smoke.frontend("https://frontend.invalid", index)
-            self.assertEqual(request.call_args.args[0], "https://frontend.invalid/v1/auth/session")
+                smoke.frontend("https://frontend.invalid", index, "https://backend.invalid")
+            self.assertEqual(request.call_args.args[0], "https://backend.invalid/v1/chat/messages")
+            self.assertEqual(request.call_args.kwargs["method"], "OPTIONS")
 
     def test_http_200_for_old_build_is_not_a_success(self):
         with TemporaryDirectory() as directory:
@@ -185,7 +187,7 @@ class SmokeTests(unittest.TestCase):
             index.write_text('<script src="/assets/current.js"></script>')
             with patch.object(smoke, "request", return_value=(200, {"Content-Type": "text/html"}, "old build")):
                 with self.assertRaisesRegex(AssertionError, "this build"):
-                    smoke.frontend("https://frontend.invalid", index)
+                    smoke.frontend("https://frontend.invalid", index, "https://backend.invalid")
 
     def test_spa_html_instead_of_missing_javascript_is_not_a_success(self):
         with TemporaryDirectory() as directory:
@@ -196,7 +198,7 @@ class SmokeTests(unittest.TestCase):
                 (200, {"Content-Type": "text/html"}, index.read_text()),
             ]):
                 with self.assertRaisesRegex(AssertionError, "Missing frontend asset"):
-                    smoke.frontend("https://frontend.invalid", index)
+                    smoke.frontend("https://frontend.invalid", index, "https://backend.invalid")
 
     def test_smoke_retries_are_bounded(self):
         from unittest.mock import Mock

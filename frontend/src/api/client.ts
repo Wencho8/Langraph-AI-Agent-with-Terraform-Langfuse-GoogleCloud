@@ -1,3 +1,5 @@
+import { fetchApi } from './transport'
+
 export type PriceSeries = { instrument_id: string; symbol: string; market: string; currency: string | null; source: string; start: string; end: string; adjustment: string; settlement: string; as_of: string | null; points: { date: string; close: number }[] }
 export type ChartBlock = { type: 'chart'; id: string; title: string; comparison: 'absolute' | 'base_100'; series: PriceSeries[]; note: string }
 export type MessageBlock = { type: 'text'; text: string } | ChartBlock
@@ -8,7 +10,7 @@ export function appendText(blocks: MessageBlock[], text: string): MessageBlock[]
 }
 
 export type User = { id: string; display_name: string; username: string; is_admin?: boolean }
-export type Session = { user: User; csrf_token: string; expires_at: string }
+export type Session = { user: User; expires_at: string }
 export type Message = { id: string; turn_id: string; role: 'user' | 'assistant'; content: string; created_at: string; blocks?: MessageBlock[] }
 
 export class ApiError extends Error {
@@ -40,11 +42,10 @@ export async function responseError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, body.code || 'request_failed', body.message || 'No se pudo completar la solicitud.')
 }
 
-export async function api<T>(path: string, options: { method?: string; body?: unknown; csrf?: string; signal?: AbortSignal } = {}): Promise<T> {
-  const response = await fetch('/v1' + path, {
-    method: options.method || 'GET', credentials: 'same-origin', signal: options.signal,
-    headers: { ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.csrf ? { 'X-CSRF-Token': options.csrf } : {}) },
+export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+  const response = await fetchApi(path, {
+    method: options.method || 'GET', signal: options.signal,
+    headers: options.body !== undefined ? { 'Content-Type': 'application/json' } : {},
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   })
   if (!response.ok) throw await responseError(response)

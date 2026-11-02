@@ -46,9 +46,15 @@ describe('live tool activity', () => {
     expect(screen.queryByText(/Interrumpida|Falló/)).not.toBeInTheDocument()
   })
 
-  it('keeps the thinking indicator between tool batches, including while collapsed', () => {
-    render(<ToolActivity steps={[{ id: 'one', name: 'get_quote', status: 'completed' }]} active expanded={false} onToggle={() => {}} />)
+  it('keeps thinking below the steps between batches and hides it when finished or collapsed', () => {
+    const steps: ToolStep[] = [{ id: 'one', name: 'get_quote', status: 'completed' }]
+    const view = render(<ToolActivity steps={steps} active expanded onToggle={() => {}} />)
     expect(screen.getByRole('status', { name: 'El asistente sigue trabajando' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Herramientas/ })).not.toContainElement(screen.getByRole('status'))
+    view.rerender(<ToolActivity steps={steps} active={false} expanded onToggle={() => {}} />)
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    view.rerender(<ToolActivity steps={steps} active expanded={false} onToggle={() => {}} />)
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(screen.queryByRole('list')).not.toBeInTheDocument()
   })
 

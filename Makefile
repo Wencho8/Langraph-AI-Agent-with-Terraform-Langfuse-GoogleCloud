@@ -48,7 +48,7 @@ frontend-test: ## Run focused frontend tests
 frontend-build: ## Typecheck and compile the static frontend
 	$(COMPOSE) exec -T frontend npm run build
 
-login: ## Interactive CLI login; saves a private ignored cookie jar
+login: ## Interactive CLI login; saves a private ignored session token
 	@python3 scripts/chat.py login
 
 logout: ## Revoke the current CLI session and remove its cookie jar

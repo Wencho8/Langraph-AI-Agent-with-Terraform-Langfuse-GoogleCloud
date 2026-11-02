@@ -65,7 +65,7 @@ export default function Chat({ session, onExpired }: { session: Session; onExpir
       { id: answerId, turn_id: '', role: 'assistant', content: '', created_at: '', streaming: true },
     ])
     try {
-      await streamChat(message, session.csrf_token, controller.signal, event => {
+      await streamChat(message, controller.signal, event => {
         if (version !== epoch.current) return
         if (event.event === 'started') {
           started = true; turnId = event.data.turn_id
@@ -115,7 +115,7 @@ export default function Chat({ session, onExpired }: { session: Session; onExpir
     if (loggingOut) return
     setLoggingOut(true); setError(''); epoch.current++; stream.current?.abort()
     try {
-      await api('/auth/logout', { method: 'POST', body: {}, csrf: session.csrf_token })
+      await api('/auth/logout', { method: 'POST', body: {} })
       onExpired()
     } catch (error) {
       setError(errorMessage(error)); await loadHistory(); busyRef.current = false; setBusy(false); setLoggingOut(false)

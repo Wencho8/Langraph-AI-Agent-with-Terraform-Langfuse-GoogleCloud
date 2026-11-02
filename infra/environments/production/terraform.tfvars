@@ -7,3 +7,5 @@ backend_image   = "us-central1-docker.pkg.dev/wencho8-chatbot-prod/chatbot/backe
 frontend_origin       = "https://wencho8-chatbot-prod.web.app"
 model                 = "openai:gpt-6.1-terra"
 openai_secret_version = "1"
+enable_iol            = true
+iol_secret_version    = "1"

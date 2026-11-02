@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../src/App'
+import { saveToken } from '../src/api/transport'
 import AuthForm from '../src/auth/AuthForm'
 import Chat from '../src/chat/Chat'
 import { api, ApiError, type Session } from '../src/api/client'
@@ -8,13 +9,14 @@ import { streamChat, type ChatEvent } from '../src/api/stream'
 
 vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), api: vi.fn() }))
 vi.mock('../src/api/stream', async original => ({ ...await original<typeof import('../src/api/stream')>(), streamChat: vi.fn() }))
-const session: Session = { user: { id: 'alice', username: 'alice', display_name: 'Alice' }, csrf_token: 'csrf', expires_at: new Date(Date.now() + 86400000).toISOString() }
+const session: Session = { user: { id: 'alice', username: 'alice', display_name: 'Alice' }, expires_at: new Date(Date.now() + 86400000).toISOString() }
 const mockedApi = vi.mocked(api)
 const mockedStream = vi.mocked(streamChat)
 beforeEach(() => { vi.resetAllMocks(); mockedApi.mockResolvedValue([]) })
 
 describe('access screens', () => {
   it('shows login only for an absent session; dependencies offer retry', async () => {
+    saveToken('fixture-token')
     mockedApi.mockRejectedValue(new ApiError(503, 'dependency_unavailable', 'unavailable'))
     render(<App />)
     expect(await screen.findByRole('button', { name: 'Volver a intentar' })).toBeInTheDocument()
@@ -22,6 +24,17 @@ describe('access screens', () => {
     mockedApi.mockRejectedValue(new ApiError(401, 'unauthenticated', 'sign in'))
     fireEvent.click(screen.getByRole('button', { name: 'Volver a intentar' }))
     expect(await screen.findByLabelText('Contraseña')).toBeInTheDocument()
+  })
+  it('shows login immediately without a token and stores a new login session', async () => {
+    mockedApi.mockResolvedValueOnce({ ...session, access_token: 'new-login-token', token_type: 'Bearer' }).mockResolvedValue([])
+    render(<App />)
+    const input = await screen.findByLabelText('Contraseña')
+    expect(mockedApi).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.change(input, { target: { value: 'fixture-password' } })
+    fireEvent.submit(screen.getByRole('button', { name: 'Iniciar sesión' }).closest('form')!)
+    await waitFor(() => expect(sessionStorage.length).toBe(1))
+    expect(sessionStorage.getItem(sessionStorage.key(0)!)).toBe('new-login-token')
   })
   it('validates repeated password before submitting registration', async () => {
     render(<AuthForm onLogin={vi.fn()} />)
@@ -44,7 +57,7 @@ async function composer() {
 describe('chat lifecycle', () => {
   it('shows live calls below thinking, keeps collapse choice through history refresh, and isolates activity by turn', async () => {
     let emit!: (event: ChatEvent) => void, finish!: () => void
-    mockedStream.mockImplementation((_message, _csrf, _signal, onEvent) => { emit = onEvent; return new Promise(resolve => { finish = resolve }) })
+    mockedStream.mockImplementation((_message, _signal, onEvent) => { emit = onEvent; return new Promise(resolve => { finish = resolve }) })
     const view = render(<Chat key="alice" session={session} onExpired={vi.fn()} />)
     const { input, form } = await composer()
     fireEvent.submit(form)
@@ -73,7 +86,7 @@ describe('chat lifecycle', () => {
     expect(screen.queryByRole('button', { name: /Herramientas/ })).not.toBeInTheDocument()
   })
   it('marks an unfinished tool interrupted when the stream fails', async () => {
-    mockedStream.mockImplementation(async (_message, _csrf, _signal, emit) => {
+    mockedStream.mockImplementation(async (_message, _signal, emit) => {
       emit({ event: 'started', data: { turn_id: 'failed-turn' } })
       emit({ event: 'tool_status', data: { id: 'call-1', name: 'get_price_history', status: 'running' } })
       throw new ApiError(502, 'incomplete_stream', 'Connection lost')
@@ -106,7 +119,7 @@ describe('chat lifecycle', () => {
   })
   it('locks synchronously, streams, and replaces deltas with the canonical answer', async () => {
     let emit!: (event: ChatEvent) => void, finish!: () => void
-    mockedStream.mockImplementation((_message, _csrf, _signal, onEvent) => { emit = onEvent; return new Promise(resolve => { finish = resolve }) })
+    mockedStream.mockImplementation((_message, _signal, onEvent) => { emit = onEvent; return new Promise(resolve => { finish = resolve }) })
     render(<Chat session={session} onExpired={vi.fn()} />)
     const { input, form } = await composer()
     fireEvent.submit(form); fireEvent.submit(form)
@@ -138,7 +151,7 @@ describe('chat lifecycle', () => {
   })
   it('aborts an old stream and ignores its late results after switching users', async () => {
     let signal!: AbortSignal, emit!: (event: ChatEvent) => void, finish!: () => void
-    mockedStream.mockImplementation((_message, _csrf, passedSignal, onEvent) => { signal = passedSignal; emit = onEvent; return new Promise(resolve => { finish = resolve }) })
+    mockedStream.mockImplementation((_message, passedSignal, onEvent) => { signal = passedSignal; emit = onEvent; return new Promise(resolve => { finish = resolve }) })
     const view = render(<Chat key="alice" session={session} onExpired={vi.fn()} />)
     fireEvent.submit((await composer()).form)
     view.rerender(<Chat key="bob" session={{ ...session, user: { id: 'bob', username: 'bob', display_name: 'Bob' } }} onExpired={vi.fn()} />)

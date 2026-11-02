@@ -140,3 +140,7 @@ The helper tests fake gcloud and HTTP and do not execute cloud commands. Backend
 - [Google Cloud federation for deployment pipelines](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines)
 - [Firebase CLI with Application Default Credentials](https://firebase.google.com/docs/cli#cli-ci-systems)
 - [Cloud Run traffic and rollback](https://docs.cloud.google.com/run/docs/rollouts-rollbacks-traffic-migration)
+
+## Direct API update
+
+Production builds now receive public `VITE_API_BASE_URL` from the workflow (optional repository variable `API_BASE_URL`, with the current Cloud Run URL as default). Firebase deploys static assets without an API rewrite. The frontend smoke check uses `--api-url "$VITE_API_BASE_URL"` to verify direct API authentication and CORS preflight. Backend deploy precedes frontend deploy. See [direct API delivery](direct-api.md); no new GitHub secret or Terraform apply is needed.

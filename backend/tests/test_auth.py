@@ -45,7 +45,8 @@ async def register(http, username='alice-auth', name='Alice'):
     response = await http.post('/v1/auth/login', json={'username': username, 'password': PASSWORD})
     assert response.status_code == 200, response.text
     body = response.json()
-    http.headers['X-CSRF-Token'] = body['csrf_token']
+    http.headers['Authorization'] = 'Bearer ' + body.pop('access_token')
+    assert body.pop('token_type') == 'Bearer'
     return body
 
 
@@ -55,10 +56,10 @@ async def test_registration_login_storage_validation_and_restart(database, caplo
         session = await register(http, '  ALICE-auth  ', ' Alice & <rules> ')
         assert session['user']['username'] == 'alice-auth'
         assert session['user']['display_name'] == 'Alice & <rules>'
-        token = http.cookies['__session']
+        token = http.headers['Authorization'].removeprefix('Bearer ')
         restored = await http.get('/v1/auth/session')
         assert restored.json() == session and restored.headers['cache-control'] == 'no-store'
-        cookie_header = restored.request.headers['cookie']
+        authorization = restored.request.headers['authorization']
         async with db.session() as sql:
             user = await sql.scalar(select(User).where(User.username == 'alice-auth'))
             stored = await sql.scalar(select(AuthSessionRecord).where(AuthSessionRecord.user_id == user.id))
@@ -86,37 +87,37 @@ async def test_registration_login_storage_validation_and_restart(database, caplo
             missing = await login.post('/v1/auth/login', json={'username': 'not-present', 'password': 'incorrect'})
             assert wrong.status_code == missing.status_code == 401 and wrong.json() == missing.json()
             response = await login.post('/v1/auth/login', json={'username': 'ALICE-auth', 'password': PASSWORD})
-            assert response.status_code == 200 and login.cookies['__session'] != token
-            header = response.headers['set-cookie']
-            assert 'HttpOnly' in header and 'SameSite=lax' in header and 'Path=/' in header
-            assert 'Domain=' not in header and 'Secure' not in header
-            assert token not in response.text and 'password_hash' not in response.text
+            assert response.status_code == 200 and response.json()['access_token'] != token
+            assert 'set-cookie' not in response.headers
+            assert response.json()['token_type'] == 'Bearer'
+            assert 'password_hash' not in response.text
     async with application(url) as restarted, client(restarted) as http:
-        response = await http.get('/v1/auth/session', headers={'Cookie': cookie_header})
+        response = await http.get('/v1/auth/session', headers={'Authorization': authorization})
         assert response.status_code == 200
     assert PASSWORD not in caplog.text and token not in caplog.text
 
 
-async def test_ownership_csrf_logout_replay_and_independent_device(database):
+async def test_ownership_bearer_logout_replay_and_independent_device(database):
     _, url = database
     async with application(url) as app, client(app) as alice, client(app) as bob, client(app) as other_device:
         a, b = await register(alice), await register(bob, 'bob-auth', 'Bob')
-        old_cookie = alice.cookies['__session']
+        old_token = alice.headers['Authorization']
         response = await alice.post('/v1/chat/messages', json={'message': 'ALICE_PRIVATE'})
         assert frames(response)[-1][0] == 'completed' and response.headers['cache-control'] == 'no-store'
         history = await bob.get('/v1/chat/messages', headers={'X-Dev-User-Id': a['user']['id']}, params={'user_id': a['user']['id']})
         assert history.json() == []
         forged = await bob.post('/v1/chat/messages', json={'message': 'attempt', 'user_id': a['user']['id']})
         assert forged.status_code == 422
-        for headers in ({'Origin': 'https://untrusted.test'}, {'Origin': ''}, {'X-CSRF-Token': ''}, {'X-CSRF-Token': b['csrf_token']}):
+        for headers in ({'Origin': 'https://untrusted.test'}, {'Origin': ''}):
             denied = await alice.post('/v1/chat/messages', headers=headers, json={'message': 'denied'})
             assert denied.status_code == 403
-        denied_logout = await alice.post('/v1/auth/logout', headers={'X-CSRF-Token': 'wrong'}, json={})
+        denied_logout = await alice.post('/v1/auth/logout', headers={'Origin': 'https://evil.test'}, json={})
         assert denied_logout.status_code == 403
         response = await other_device.post('/v1/auth/login', json={'username': 'alice-auth', 'password': PASSWORD})
         assert response.status_code == 200
+        other_device.headers['Authorization'] = 'Bearer ' + response.json()['access_token']
         assert (await alice.post('/v1/auth/logout', json={})).status_code == 204
-        replay = await alice.get('/v1/chat/messages', headers={'Cookie': '__session=' + old_cookie})
+        replay = await alice.get('/v1/chat/messages', headers={'Authorization': old_token})
         assert replay.status_code == 401
         assert (await other_device.get('/v1/chat/messages')).json()[0]['content'] == 'ALICE_PRIVATE'
         assert (await bob.get('/v1/chat/messages')).json() == []
@@ -130,13 +131,15 @@ async def test_expiry_rotation_limits_and_origin_guard(database):
         denied = await http.post('/v1/auth/register', headers={'Origin': 'https://evil.test'}, json={})
         assert denied.status_code == 403
         await register(http)
-        old = http.cookies['__session']
-        assert (await http.post('/v1/auth/login', json={'username': 'alice-auth', 'password': PASSWORD})).status_code == 200
-        assert (await http.get('/v1/auth/session', headers={'Cookie': '__session=' + old})).status_code == 401
+        old = http.headers['Authorization']
+        login = await http.post('/v1/auth/login', json={'username': 'alice-auth', 'password': PASSWORD})
+        assert login.status_code == 200
+        http.headers['Authorization'] = 'Bearer ' + login.json()['access_token']
+        assert (await http.get('/v1/auth/session', headers={'Authorization': old})).status_code == 401
         async with db.session() as sql, sql.begin():
             await sql.execute(update(AuthSessionRecord).values(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
         assert (await http.get('/v1/auth/session')).status_code == 401
-        http.cookies.set('__session', secrets.token_urlsafe(32))
+        http.headers['Authorization'] = 'Bearer ' + secrets.token_urlsafe(32)
         assert (await http.get('/v1/auth/session')).status_code == 401
         app.state.auth.login_limit = 1
         app.state.auth.limiter = MemoryAuthLimiter()
@@ -212,8 +215,8 @@ def test_auth_limit_storage_and_production_settings():
     limiter.check([('one', 1)])
     with pytest.raises(AuthRateLimited):
         limiter.check([('two', 1)])
-    for overrides in ({'auth_mode': 'development'}, {'session_cookie_secure': False}, {'app_origin': 'http://example.com'}):
+    for overrides in ({'auth_mode': 'development'}, {'app_origin': 'http://example.com'}):
         settings = {'database_url': 'postgresql+asyncpg://unused', 'app_env': 'production',
-                    'app_origin': 'https://example.com', 'session_cookie_secure': True, **overrides}
+                    'app_origin': 'https://example.com', **overrides}
         with pytest.raises(ValidationError):
             Settings(**settings)
