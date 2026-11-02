@@ -75,4 +75,5 @@ class MessageRecord(Base):
     position: Mapped[int] = mapped_column(Integer)
     role: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
+    blocks: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

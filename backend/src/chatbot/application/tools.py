@@ -1,4 +1,4 @@
-"""Minimal allowlisted execution boundary; application startup registers no tools."""
+"""Allowlisted async execution boundary; chart events are invocation-local."""
 
 import json
 import re
@@ -10,6 +10,7 @@ from typing import Any
 from jsonschema import Draft202012Validator, ValidationError
 
 from chatbot.domain.agent import ToolCall, ToolDefinition
+from chatbot.domain.presentation import ChartResult, ChartReady
 from chatbot.domain.errors import InvalidToolCall, ToolFailed
 
 
@@ -33,6 +34,11 @@ class ToolRegistry:
             Draft202012Validator.check_schema(tool.definition.parameters)
             registered[name] = tool
         self._tools = MappingProxyType(registered)
+        self._events = []
+
+    def take_events(self):
+        events, self._events = self._events, []
+        return events
 
     @property
     def definitions(self) -> tuple[ToolDefinition, ...]:
@@ -51,6 +57,9 @@ class ToolRegistry:
             raise InvalidToolCall() from None
         try:
             result = await tool.handler(**arguments)
+            if isinstance(result, ChartResult):
+                self._events.append(ChartReady(result.block))
+                result = result.result
             return json.dumps(result, ensure_ascii=False, allow_nan=False)
         except Exception as exc:
             raise ToolFailed() from exc

@@ -140,3 +140,14 @@ async def test_upgrade_from_iteration_one_keeps_old_messages_and_checks_current_
     async with db.session() as session:
         record = await session.get(TurnRecord, turn)
         assert record.agent_transcript == [] and record.execution_metadata == {}
+
+
+async def test_chart_blocks_persist_only_with_owner_history(database):
+    db, _ = database
+    repository = PostgresConversationRepository(db)
+    alice, bob = DEVELOPMENT_USERS["alice"], DEVELOPMENT_USERS["bob"]
+    turn, _ = await repository.begin(alice, "Compare")
+    blocks = [{"type": "text", "text": "Before"}, {"type": "chart", "id": "snapshot", "series": []}, {"type": "text", "text": "After"}]
+    await repository.complete(turn, "BeforeAfter", blocks=blocks)
+    assert (await repository.messages(alice))[-1].blocks == blocks
+    assert await repository.messages(bob) == []

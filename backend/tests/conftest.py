@@ -16,6 +16,8 @@ from chatbot.adapters.outbound.postgres.seed import seed
 def offline_defaults(monkeypatch):
     monkeypatch.setenv("DATABASE_MODE", "direct")
     monkeypatch.setenv("MODEL", "simulated")
+    monkeypatch.setenv("MARKET_DATA_PROVIDER", "disabled")
+    monkeypatch.delenv("IOL_CREDENTIALS", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("LANGSMITH_TRACING", "false")
     monkeypatch.setenv("LANGCHAIN_TRACING_V2", "false")

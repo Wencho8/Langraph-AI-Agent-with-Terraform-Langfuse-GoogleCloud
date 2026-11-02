@@ -17,3 +17,4 @@ class MessageResponse(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     created_at: datetime
+    blocks: list[dict] = Field(default_factory=list)

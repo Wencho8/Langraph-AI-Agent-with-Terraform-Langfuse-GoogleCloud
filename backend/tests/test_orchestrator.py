@@ -30,7 +30,7 @@ class Repository:
         )
         return turn, ChatHistory.from_messages(self.history[user_id])
 
-    async def complete(self, turn, text, *, transcript=(), metadata=None):
+    async def complete(self, turn, text, *, transcript=(), metadata=None, blocks=()):
         if self.fail_save:
             raise Unavailable()
         message = Message(uuid4(), turn.id, "assistant", text, datetime.now(timezone.utc))
@@ -88,6 +88,7 @@ async def test_full_history_and_independent_users():
     second = await consume(await service.open(alice, "second", "a2"))
     other = await consume(await service.open(bob, "bob only", "b1"))
     assert first[0].kind == "started" and first[-1].kind == "completed"
+    assert "Simulated reply for Alice" in first[-1].data["text"]
     assert "Received 3 messages" in second[-1].data["text"]
     assert "Received 1 messages" in other[-1].data["text"]
     assert [m.content for m in repository.history[alice.id] if m.role == "user"] == ["first", "second"]
@@ -158,4 +159,48 @@ async def test_lock_loss_stops_a_waiting_model():
     assert remaining[-1].kind == "error"
     assert remaining[-1].data["code"] == "dependency_unavailable"
     assert list(repository.status.values()) == ["failed"]
+    assert not locks.held and service.active == 0
+
+
+async def test_forwards_safe_tool_progress_before_answer():
+    from chatbot.application.tools import Tool, ToolRegistry
+    from chatbot.domain.agent import ToolCall, ToolDefinition
+    from tests.test_agent import ScriptedModel, answer, tool_reply
+
+    async def lookup(secret_argument):
+        return {"private_provider_body": "not for the progress panel"}
+
+    definition = ToolDefinition("lookup", "Fixture", {
+        "type": "object", "properties": {"secret_argument": {"type": "string"}},
+        "required": ["secret_argument"], "additionalProperties": False,
+    })
+    model = ScriptedModel([tool_reply(ToolCall("call-1", "lookup", '{"secret_argument":"private"}')), answer()])
+    agent = LangGraphAgent(model, prompt=load_prompt(), tools=ToolRegistry([Tool(definition, lookup)]))
+    repository, locks = Repository(), Locks()
+    service = ChatOrchestrator(repository, locks, agent, MemoryRateLimiter(20, 60), capacity=4, turn_timeout=2)
+    events = await consume(await service.open(UserProfile(uuid4()), "hello", "request"))
+    progress = [event.data for event in events if event.kind == "tool_status"]
+    assert progress[0] == {"id": "call-1", "name": "lookup", "status": "running"}
+    assert progress[1] == {"id": "call-1", "name": "lookup", "status": "completed",
+                           "duration_ms": progress[1]["duration_ms"]}
+    assert progress[1]["duration_ms"] >= 0
+    assert [event.kind for event in events] == ["started", "tool_status", "tool_status", "delta", "completed"]
+    assert not locks.held and service.active == 0
+
+
+async def test_timed_out_tool_emits_failed_status_before_terminal_error():
+    import asyncio
+    from tests.test_agent import ScriptedModel, registry, tool_reply
+    from chatbot.domain.agent import ToolCall
+
+    async def slow_tool(amount):
+        await asyncio.sleep(1)
+
+    agent = LangGraphAgent(ScriptedModel([tool_reply(ToolCall("slow", "double", '{"amount":1}'))]),
+                          prompt=load_prompt(), tools=registry(slow_tool), tool_timeout=0.01)
+    repository, locks = Repository(), Locks()
+    service = ChatOrchestrator(repository, locks, agent, MemoryRateLimiter(20, 60), capacity=4, turn_timeout=2)
+    events = await consume(await service.open(UserProfile(uuid4()), "hello", "request"))
+    assert events[-1].kind == "error" and events[-1].data["code"] == "tool_timeout"
+    assert [event.data["status"] for event in events if event.kind == "tool_status"] == ["running", "failed"]
     assert not locks.held and service.active == 0

@@ -11,10 +11,11 @@ import anyio
 from chatbot.application.ports import AgentRunner, ConversationLock, ConversationRepository, LockLease, RateLimiter
 from chatbot.domain.agent import (
     AgentCompleted, AgentEvent, AgentRequest, ModelCallFinished, ModelCallStarted,
-    TextDelta, ToolCallStarted, aggregate_usage,
+    TextDelta, ToolCallStarted, ToolCallFinished, aggregate_usage,
 )
 from chatbot.domain.errors import ChatError, InvalidModelResponse, Saturated, TurnTimedOut, Unavailable
 from chatbot.domain.models import ChatEvent, Message, Turn, UserProfile
+from chatbot.domain.presentation import ChartReady
 
 logger = logging.getLogger("chatbot")
 
@@ -102,6 +103,7 @@ class ChatExecution:
     def metadata(self):
         return {
             "provider": self.owner.agent.provider, "model": self.owner.agent.model_name,
+            "reasoning_effort": getattr(self.owner.agent, "reasoning_effort", None),
             "prompt_revision": self.owner.agent.prompt_revision,
             "model_calls": self.model_calls, "tool_calls": self.tool_calls,
             "calls": self.calls, "usage": aggregate_usage(self.calls, self.model_calls),
@@ -162,10 +164,16 @@ class ChatExecution:
                             if self.first_chunk_ms is None:
                                 self.first_chunk_ms = round((monotonic() - self.started) * 1000, 2)
                             yield ChatEvent("delta", {"text": event.text})
+                        elif isinstance(event, ChartReady):
+                            yield ChatEvent("chart", {"block": event.block})
                         elif isinstance(event, ModelCallStarted):
                             self.model_calls = event.count
                         elif isinstance(event, ToolCallStarted):
                             self.tool_calls = event.count
+                            yield ChatEvent("tool_status", {"id": event.call_id, "name": event.name, "status": "running"})
+                        elif isinstance(event, ToolCallFinished):
+                            yield ChatEvent("tool_status", {"id": event.call_id, "name": event.name,
+                                                           "status": event.status, "duration_ms": event.duration_ms})
                         elif isinstance(event, ModelCallFinished):
                             self.calls.append(event.metrics)
                         elif isinstance(event, AgentCompleted):
@@ -176,12 +184,13 @@ class ChatExecution:
                     raise InvalidModelResponse()
                 await self.check()
                 message = await self.owner.repository.complete(
-                    self.turn, self.result.text, transcript=self.result.transcript, metadata=self.result.metadata
+                    self.turn, self.result.text, transcript=self.result.transcript, metadata=self.result.metadata,
+                    **({"blocks": self.result.blocks} if self.result.blocks else {})
                 )
                 self.completed = True
             yield ChatEvent("completed", {
                 **identifiers, "message_id": str(message.id), "text": message.content,
-                "status": "completed", "metadata": self.result.metadata,
+                "status": "completed", "metadata": self.result.metadata, "blocks": list(self.result.blocks),
             })
         except asyncio.CancelledError:
             raise

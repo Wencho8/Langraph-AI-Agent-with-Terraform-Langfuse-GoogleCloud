@@ -41,10 +41,11 @@ def token_usage(value) -> TokenUsage:
 class OpenAIModel:
     provider = "openai"
 
-    def __init__(self, client, *, model: str, max_output_tokens: int):
+    def __init__(self, client, *, model: str, max_output_tokens: int, reasoning_effort: str | None = None):
         self.client = client
         self.name = model
         self.max_output_tokens = max_output_tokens
+        self.reasoning_effort = reasoning_effort
 
     def _serialize(self, items: tuple[ModelItem, ...]) -> list[dict]:
         serialized = []
@@ -73,6 +74,8 @@ class OpenAIModel:
             store=False, max_output_tokens=self.max_output_tokens,
             include=["reasoning.encrypted_content"],
         )
+        if self.reasoning_effort is not None:
+            options["reasoning"] = {"effort": self.reasoning_effort}
         if request.tools:
             options["tools"] = [
                 {"type": "function", "name": tool.name, "description": tool.description,

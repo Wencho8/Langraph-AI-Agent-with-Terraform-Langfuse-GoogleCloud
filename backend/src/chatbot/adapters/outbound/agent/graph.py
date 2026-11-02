@@ -1,7 +1,10 @@
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from dataclasses import asdict
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from time import monotonic
 from typing import TypedDict
 
@@ -13,13 +16,15 @@ from chatbot.application.ports import ChatModel
 from chatbot.application.tools import ToolRegistry
 from chatbot.domain.agent import (
     AgentCompleted, AgentEvent, AgentRequest, ModelCallFinished, ModelCallStarted,
-    ModelCompleted, ModelItem, ModelRequest, TextDelta, ToolCall, ToolCallStarted, aggregate_usage,
+    ModelCompleted, ModelItem, ModelRequest, TextDelta, ToolCall, ToolCallStarted, ToolCallFinished, aggregate_usage,
 )
 from chatbot.domain.errors import ExecutionLimit, InvalidModelResponse, InvalidToolCall, ModelTimedOut, ToolTimedOut, TurnTimedOut
 from chatbot.prompts.loader import Prompt, profile_context
+from chatbot.domain.presentation import ChartReady, append_text
 
 
 class AgentState(TypedDict):
+    tools: ToolRegistry
     request: AgentRequest
     items: list[ModelItem]
     transcript: list[ModelItem]
@@ -35,11 +40,13 @@ class LangGraphAgent:
     def __init__(
         self, model: ChatModel, *, prompt: Prompt, tools: ToolRegistry | None = None,
         max_model_calls: int = 4, max_tool_calls: int = 8, recursion_limit: int = 12,
-        model_timeout: float = 20, tool_timeout: float = 5,
+        model_timeout: float = 20, tool_timeout: float = 5, tools_factory=None,
     ):
         self.provider, self.model_name, self.prompt_revision = model.provider, model.name, prompt.revision
         self.recursion_limit = recursion_limit
+        self.reasoning_effort = getattr(model, "reasoning_effort", None)
         tools = tools if tools is not None else ToolRegistry()
+        self.tools_factory = tools_factory or (lambda: tools)
 
         async def check(request):
             if asyncio.get_running_loop().time() >= request.deadline:
@@ -60,8 +67,9 @@ class LangGraphAgent:
             completion = None
             parts = []
             model_request = ModelRequest(
-                prompt.instructions, profile_context(state["request"].user),
-                tuple(state["items"]), tools.definitions,
+                prompt.instructions, (profile_context(state["request"].user) or "") +
+                "\n<runtime_date>" + datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date().isoformat() + "</runtime_date>",
+                tuple(state["items"]), state["tools"].definitions,
             )
             try:
                 async with asyncio.timeout(min(model_timeout, remaining)):
@@ -95,7 +103,7 @@ class LangGraphAgent:
             return {
                 "items": [*state["items"], *completion.items],
                 "transcript": [*state["transcript"], *completion.items],
-                "response": completion.text, "pending": list(completion.tool_calls),
+                "response": state["response"] + completion.text, "pending": list(completion.tool_calls),
                 "model_calls": count, "calls": [*state["calls"], metrics],
             }
 
@@ -109,14 +117,25 @@ class LangGraphAgent:
                 count += 1
                 if count > max_tool_calls:
                     raise ExecutionLimit()
-                get_stream_writer()(ToolCallStarted(count))
+                get_stream_writer()(ToolCallStarted(count, call.id, call.name))
+                tool_started, tool_status = monotonic(), "failed"
                 try:
                     async with asyncio.timeout(min(tool_timeout, remaining)):
-                        output = await tools.execute(call)
+                        output = await state["tools"].execute(call)
+                        parsed = json.loads(output)
+                        tool_status = "failed" if isinstance(parsed, dict) and parsed.get("error") else "completed"
+                        for event in state["tools"].take_events():
+                            get_stream_writer()(event)
+                except asyncio.CancelledError:
+                    tool_status = "cancelled"
+                    raise
                 except TimeoutError as exc:
                     if remaining <= tool_timeout:
                         raise TurnTimedOut() from exc
                     raise ToolTimedOut() from exc
+                finally:
+                    get_stream_writer()(ToolCallFinished(call.id, call.name, tool_status,
+                                                        round((monotonic() - tool_started) * 1000, 2)))
                 results.append(ModelItem("tool_result", {"call_id": call.id, "output": output}, self.provider))
             return {
                 "items": [*state["items"], *results],
@@ -135,9 +154,10 @@ class LangGraphAgent:
 
     async def stream(self, request: AgentRequest) -> AsyncIterator[AgentEvent]:
         final = None
+        blocks = []
         try:
             stream = self.graph.astream(
-                {"request": request, "items": list(request.history.items), "transcript": [],
+                {"request": request, "tools": self.tools_factory(), "items": list(request.history.items), "transcript": [],
                  "response": "", "pending": [], "model_calls": 0, "tool_calls": 0,
                  "seen_calls": [], "calls": []},
                 config={"recursion_limit": self.recursion_limit}, stream_mode=["custom", "values"],
@@ -145,6 +165,10 @@ class LangGraphAgent:
             async with aclosing(stream):
                 async for mode, event in stream:
                     if mode == "custom":
+                        if isinstance(event, TextDelta):
+                            append_text(blocks, event.text)
+                        elif isinstance(event, ChartReady):
+                            blocks.append(event.block)
                         yield event
                     else:
                         final = event
@@ -156,4 +180,5 @@ class LangGraphAgent:
             "provider": self.provider, "model": self.model_name, "prompt_revision": self.prompt_revision,
             "model_calls": final["model_calls"], "tool_calls": final["tool_calls"],
             "calls": final["calls"], "usage": aggregate_usage(final["calls"], final["model_calls"]),
-        })
+            "reasoning_effort": getattr(self, "reasoning_effort", None),
+        }, tuple(blocks))

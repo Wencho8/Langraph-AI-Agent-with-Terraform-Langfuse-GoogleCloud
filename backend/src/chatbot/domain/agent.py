@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 from .models import Message, UserProfile
+from .presentation import ChartReady
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,16 @@ class ModelCallFinished:
 @dataclass(frozen=True)
 class ToolCallStarted:
     count: int
+    call_id: str = ""
+    name: str = ""
+
+
+@dataclass(frozen=True)
+class ToolCallFinished:
+    call_id: str
+    name: str
+    status: Literal["completed", "failed", "cancelled"]
+    duration_ms: float
 
 
 @dataclass(frozen=True)
@@ -116,6 +127,7 @@ class AgentCompleted:
     text: str
     transcript: tuple[ModelItem, ...]
     metadata: dict[str, Any]
+    blocks: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,4 +139,4 @@ class AgentRequest:
 
 
 ModelEvent = TextDelta | ModelCompleted
-AgentEvent = TextDelta | ModelCallStarted | ModelCallFinished | ToolCallStarted | AgentCompleted
+AgentEvent = TextDelta | ModelCallStarted | ModelCallFinished | ToolCallStarted | ToolCallFinished | AgentCompleted | ChartReady

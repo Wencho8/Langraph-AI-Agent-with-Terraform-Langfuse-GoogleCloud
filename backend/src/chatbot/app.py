@@ -1,3 +1,4 @@
+import json
 import logging
 from time import monotonic
 from contextlib import asynccontextmanager
@@ -21,6 +22,8 @@ from chatbot.adapters.outbound.postgres.repository import PostgresConversationRe
 from chatbot.adapters.outbound.rate_limit.memory import MemoryRateLimiter
 from chatbot.application.orchestrator import ChatOrchestrator, log_event
 from chatbot.application.tools import ToolRegistry
+from chatbot.application.market_tools import market_tools
+from chatbot.adapters.outbound.market_data.iol import IolMarketData
 from chatbot.config import Settings
 from chatbot.domain.errors import ChatError
 from chatbot.prompts.loader import load_prompt
@@ -34,6 +37,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         database = await Database.open(settings, settings.max_active_turns)
         model = None
+        market = None
         try:
             prompt = load_prompt()
             repository = PostgresConversationRepository(database)
@@ -50,8 +54,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await auth.initialize()
             app.state.auth = auth
             app.state.settings = settings
+            if settings.market_data_provider == "iol":
+                credentials = json.loads(settings.iol_credentials.get_secret_value())
+                market = IolMarketData(credentials["username"], credentials["password"])
             agent = LangGraphAgent(
-                model, prompt=prompt, tools=ToolRegistry(),
+                model, prompt=prompt, tools_factory=(lambda: market_tools(market)) if market else ToolRegistry,
                 max_model_calls=settings.max_model_calls, max_tool_calls=settings.max_tool_calls,
                 recursion_limit=settings.graph_recursion_limit, model_timeout=settings.model_timeout_seconds,
                 tool_timeout=settings.tool_timeout_seconds,
@@ -69,7 +76,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if model is not None:
                     await model.close()
             finally:
-                await database.close()
+                try:
+                    if market is not None:
+                        await market.close()
+                finally:
+                    await database.close()
 
     app = FastAPI(title="Agent Chatbot — Local Backend", version="0.1.0", lifespan=lifespan)
     app.add_exception_handler(ChatError, application_error)

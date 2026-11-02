@@ -1,6 +1,18 @@
-import { ApiError, responseError } from './client'
+import { ApiError, responseError, type ChartBlock, type MessageBlock } from './client'
 
-export type ChatEvent = { event: 'started' | 'delta' | 'completed' | 'error'; data: Record<string, string> }
+export type ToolStep = { id: string; name: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; duration_ms?: number }
+
+export function finishPending(steps: ToolStep[]): ToolStep[] {
+  return steps.map(step => step.status === 'running' ? { ...step, status: 'cancelled' } : step)
+}
+
+export type ChatEvent =
+  | { event: 'started'; data: { turn_id: string } }
+  | { event: 'delta'; data: { text: string } }
+  | { event: 'tool_status'; data: ToolStep }
+  | { event: 'chart'; data: { block: ChartBlock } }
+  | { event: 'completed'; data: { text: string; blocks?: MessageBlock[] } }
+  | { event: 'error'; data: { code: string; message: string } }
 
 export async function readEvents(body: ReadableStream<Uint8Array>, onEvent: (event: ChatEvent) => void) {
   const reader = body.getReader()
@@ -18,7 +30,7 @@ export async function readEvents(body: ReadableStream<Uint8Array>, onEvent: (eve
         const name = lines.find(line => line.startsWith('event:'))?.slice(6).trim()
         const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n')
         if (!name || !data) continue
-        if (terminal || !['started', 'delta', 'completed', 'error'].includes(name)) throw new ApiError(502, 'invalid_stream', 'La respuesta llegó incompleta.')
+        if (terminal || !['started', 'delta', 'chart', 'tool_status', 'completed', 'error'].includes(name)) throw new ApiError(502, 'invalid_stream', 'La respuesta llegó incompleta.')
         const event = { event: name, data: JSON.parse(data) } as ChatEvent
         onEvent(event)
         if (name === 'completed' || name === 'error') terminal = true

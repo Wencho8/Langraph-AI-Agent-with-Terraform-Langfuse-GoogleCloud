@@ -8,7 +8,7 @@ from chatbot.adapters.outbound.agent.graph import LangGraphAgent
 from chatbot.application.tools import Tool, ToolRegistry
 from chatbot.domain.agent import (
     AgentCompleted, AgentRequest, ChatHistory, ModelCompleted, ModelItem,
-    TextDelta, TokenUsage, ToolCall, ToolDefinition,
+    TextDelta, TokenUsage, ToolCall, ToolCallStarted, ToolCallFinished, ToolDefinition,
 )
 from chatbot.domain.errors import ExecutionLimit, InvalidToolCall, ModelTimedOut, ToolTimedOut, TurnTimedOut
 from chatbot.domain.models import UserProfile
@@ -82,6 +82,48 @@ async def test_multiple_and_repeated_tools_have_independent_results_and_actual_u
                        {"call_id": "c", "output": "8"}]
     assert len(final.transcript) == 7
     assert all(request.instructions == load_prompt().instructions for request in model.requests)
+    progress = [event for event in events if isinstance(event, (ToolCallStarted, ToolCallFinished))]
+    assert [(type(event), event.call_id, event.name) for event in progress] == [
+        (kind, call_id, "double") for call_id in ("a", "b", "c")
+        for kind in (ToolCallStarted, ToolCallFinished)
+    ]
+    assert [event.status for event in progress if isinstance(event, ToolCallFinished)] == ["completed"] * 3
+    assert all(event.duration_ms >= 0 for event in progress if isinstance(event, ToolCallFinished))
+
+
+async def test_tool_progress_arrives_before_the_tool_returns_and_provider_errors_are_failed():
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def provider_error(amount):
+        entered.set()
+        await release.wait()
+        return {"error": "provider_unavailable"}
+
+    model = ScriptedModel([tool_reply(ToolCall("a", "double", '{"amount": 1}')), answer("Data unavailable.")])
+    agent = LangGraphAgent(model, prompt=load_prompt(), tools=registry(provider_error))
+    events = []
+    progress_received = asyncio.Event()
+
+    async def collect():
+        async for event in agent.stream(agent_request()):
+            events.append(event)
+            if isinstance(event, ToolCallStarted):
+                progress_received.set()
+
+    task = asyncio.create_task(collect())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(progress_received.wait(), 1)
+        assert not task.done()
+        assert not any(isinstance(event, ToolCallFinished) for event in events)
+        release.set()
+        await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    finished = next(event for event in events if isinstance(event, ToolCallFinished))
+    assert finished.call_id == "a" and finished.status == "failed"
+    assert isinstance(events[-1], AgentCompleted)  # A handled provider error need not fail the whole turn.
 
 
 @pytest.mark.parametrize("call", [

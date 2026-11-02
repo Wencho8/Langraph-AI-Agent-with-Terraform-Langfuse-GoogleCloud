@@ -59,3 +59,31 @@ variable "openai_secret_version" {
     error_message = "openai_secret_version must be a positive numeric version, not latest."
   }
 }
+
+variable "enable_iol" {
+  description = "Enable real IOL tools only after manually installing the credentials secret version."
+  type        = bool
+  default     = false
+}
+
+variable "iol_secret_version" {
+  description = "Numeric IOL credentials version; value is populated outside Terraform."
+  type        = string
+  default     = "1"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*$", var.iol_secret_version))
+    error_message = "iol_secret_version must be a positive numeric version."
+  }
+}
+
+variable "model_reasoning_effort" {
+  description = "Reasoning effort for the selected model; Terra 6.1 starts at high."
+  type        = string
+  default     = "high"
+
+  validation {
+    condition     = contains(["none", "low", "medium", "high", "xhigh", "max"], var.model_reasoning_effort)
+    error_message = "Unsupported reasoning effort."
+  }
+}

@@ -190,3 +190,7 @@ GitHub Actions configuration is prepared in `.github/workflows/ci-deploy.yml`: P
 - [Iteration 05 — Firebase Hosting (functionally complete; operational follow-ups pending)](specs/05-firebase-hosting.md)
 - [Iteration 06 — GitHub Actions (implementation prepared; activation pending)](specs/06-github-actions.md)
 - [Short request/concurrency flow](doc/request-flow.md)
+
+## Market tools and charts (iteration 07)
+
+IOL provides read-only Argentine instrument search, quotes and daily history; the agent can show inline Recharts comparisons automatically. Local credentials belong only in the ignored backend env. Run `make start` to rebuild and apply migration 0005, then review the examples in [market tools](doc/market-tools.md). Model/effort and broker configuration are independent. No fake fallback or trading tools are enabled. See [spec 07](specs/07-market-tools-and-charts.md).

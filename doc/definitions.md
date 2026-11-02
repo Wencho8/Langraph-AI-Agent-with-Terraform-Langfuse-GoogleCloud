@@ -1,6 +1,6 @@
 # Agent Chatbot on Google Cloud — Definitions
 
-Status: evolving project decisions. Iterations 01–03 implement the local backend, OpenAI integration, username authentication, and React chat UI. Iteration 04 deployed the backend and PostgreSQL with successful live/ready checks. Iteration 05 is functionally complete: Firebase Hosting is published and the user confirmed browser acceptance. Operational RAM/log/cost and rollback/teardown review remains pending. GitHub Actions is planned in 06 and staging in 07.
+Status: evolving project decisions. Iterations 01–03 implement the local backend, OpenAI integration, username authentication, and React chat UI. Iteration 04 deployed the backend and PostgreSQL with successful live/ready checks. Iteration 05 is functionally complete: Firebase Hosting is published and the user confirmed browser acceptance. Operational RAM/log/cost and rollback/teardown review remains pending. GitHub Actions is defined in 06. Iteration 07 adds IOL market tools and inline charts; staging remains optional later work.
 
 ## Purpose
 
@@ -179,7 +179,7 @@ This is a target layout, not an instruction to scaffold every file immediately. 
 | `adapters/outbound/postgres/` | SQLAlchemy mappings, database connections, repository implementation, and the candidate PostgreSQL lock implementation. |
 | `adapters/outbound/agent/` | Implement the agent execution port with the async LangGraph model/tools loop. LangGraph is an outbound adapter because the application invokes it as a dependency, even though it runs inside the backend process. |
 | `adapters/outbound/models/` | Implement one model request through the OpenAI or simulated adapter; the factory selects the provider. |
-| `application/tools.py` | Allowlisted tool definitions, schema validation, and sequential async execution. The runtime registry is empty. |
+| `application/tools.py` | Allowlisted tool definitions, schema validation, sequential async execution and structured chart results. Market registries are created per invocation. |
 | `prompts/` | Packaged static finance XML, validation/loading, revision hash, and separate escaped name context. |
 | `adapters/outbound/identity/` | Resolve identity through PostgreSQL-backed sessions in iteration 03. The initial development adapter remains an explicit local/test-only alternative. |
 | `frontend/` | React/TypeScript forms, session state, history, and streamed chat UI. Vite proxies same-origin API paths locally and builds static production assets. |
@@ -200,7 +200,7 @@ A future Valkey lock adapter belongs under `adapters/outbound/`, alongside Postg
 - Compile one graph at startup and reuse it. Each invocation carries its own history, user profile, transcript, and counters; the shared client stores no current user context.
 - Select provider and model through a single `MODEL` setting: `simulated` or `openai:<model-id>`. OpenAI is the first real provider for iteration 02, using the user's available API credits. The shorthand `MODEL=openai` selects `openai:gpt-6.1-terra`; explicit identifiers such as `openai:gpt-6.1-sol` override it. Use `MODEL_MAX_OUTPUT_TOKENS` for the output limit. These settings are normal configuration; the API key is a separate provider-specific secret. Keep the simulated provider available for local tests.
 - Supporting a new provider may require another adapter and capability checks; do not assume every provider has identical tool-calling or streaming behavior.
-- Concrete tools, their permissions, and RAG data sources remain undefined.
+- Iteration 07 defines read-only IOL search/quote/history tools and an inline chart tool. IOL uses native async HTTP, per-process token renewal, per-invocation series references and no fabricated fallback. See [market tools](market-tools.md). RAG remains deferred.
 
 ## Async execution
 
@@ -317,3 +317,16 @@ The first iteration is defined in [Iteration 01 — Initial Backend Setup](../sp
 The second iteration is described in [Iteration 02 — OpenAI Finance Agent](../specs/02-openai-finance-agent.md). Its normal tests run offline; live provider checks are separate.
 
 The third iteration is implemented in [Iteration 03 — Username Authentication and Chat UI](../specs/03-users-and-chat-ui.md). Deployment remains separate work.
+
+## Iteration 07 — market data and charts
+
+- Real local provider: IOL; credentials only in the ignored backend env. Cloud uses a Secret Manager JSON secret and conditional enablement. No broker credentials enter prompts, UI, docs or Terraform state.
+- OpenAI selection: `gpt-6.1-terra` with explicit `MODEL_REASONING_EFFORT=high`. Initial current defaults: model output 8192, model timeout 120s, turn timeout 240s and tool timeout 10s, retaining four model calls/eight tool calls/graph recursion 12. Earlier defaults above describe the initial iterations. Prepared Cloud Run timeout becomes 270s when the operator applies Terraform.
+- Preserve async/await throughout tools and IOL HTTP; no synchronous broker SDK or per-user threads/event loops. The compiled graph is shared; tool series/chart state is invocation-local.
+- Responses support ordered Markdown/chart blocks, saved on assistant messages as JSONB through migration 0005. Recharts draws backend-owned series; models choose references and presentation, never invent points or execute chart code. User ownership protects saved charts.
+- Historical comparisons use a conservative quality gate: a twofold increase or halving between consecutive observations returns `history_comparability_unverified` before a series reference/summary is exposed. Splits can invalidate comparisons of unadjusted prices; base 100 does not repair them. Never infer a split, investment loss or adjustment factor from the jump alone. Reliable adjusted histories/corporate-action data remain deferred, and existing chart snapshots are preserved.
+- Three editable starter prompts appear in an empty chat; two small rounded suggestion chips appear above the composer with history. Suggestions fill the draft and are disabled during a turn or logout.
+- Tool start/finish status and elapsed time stream over the existing SSE response. The UI shows an expanded, collapsible activity panel under the thinking indicator, with friendly operation labels, white/blue running/finished circles and three animated dots throughout the active turn. Tool outcomes/timings remain internal rather than displaying OK/failed or red/green states. Repeated calls use separate IDs. Activity is transient per turn; arguments, provider payloads and private reasoning are not exposed, and unfinished indicators close on disconnection. No additional migration or infrastructure is needed for this panel.
+- No simulated market provider. The existing simulated LLM and mocked provider responses remain for offline tests. No cloud apply, commit or push is authorized by implementing this iteration.
+
+See [Iteration 07](../specs/07-market-tools-and-charts.md) and [local review](market-tools.md).

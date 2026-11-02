@@ -15,7 +15,7 @@ from .models import AuthSessionRecord, Conversation, MessageRecord, TurnRecord, 
 
 
 def to_message(row: MessageRecord) -> Message:
-    return Message(row.id, row.turn_id, row.role, row.content, row.created_at)
+    return Message(row.id, row.turn_id, row.role, row.content, row.created_at, row.blocks)
 
 
 class PostgresConversationRepository:
@@ -80,9 +80,9 @@ class PostgresConversationRepository:
             history = await self._history(session, user_id)
         return turn, history
 
-    async def complete(self, turn: Turn, text: str, *, transcript=(), metadata=None) -> Message:
+    async def complete(self, turn: Turn, text: str, *, transcript=(), metadata=None, blocks=()) -> Message:
         async with self.database.session() as session, session.begin():
-            row = MessageRecord(id=uuid4(), turn_id=turn.id, position=1, role="assistant", content=text)
+            row = MessageRecord(id=uuid4(), turn_id=turn.id, position=1, role="assistant", content=text, blocks=list(blocks))
             session.add(row)
             await session.execute(update(TurnRecord).where(TurnRecord.id == turn.id).values(
                 status="completed", finished_at=datetime.now(timezone.utc),

@@ -1,6 +1,15 @@
+export type PriceSeries = { instrument_id: string; symbol: string; market: string; currency: string | null; source: string; start: string; end: string; adjustment: string; settlement: string; as_of: string | null; points: { date: string; close: number }[] }
+export type ChartBlock = { type: 'chart'; id: string; title: string; comparison: 'absolute' | 'base_100'; series: PriceSeries[]; note: string }
+export type MessageBlock = { type: 'text'; text: string } | ChartBlock
+
+export function appendText(blocks: MessageBlock[], text: string): MessageBlock[] {
+  const last = blocks.at(-1)
+  return last?.type === 'text' ? [...blocks.slice(0, -1), { type: 'text', text: last.text + text }] : [...blocks, { type: 'text', text }]
+}
+
 export type User = { id: string; display_name: string; username: string; is_admin?: boolean }
 export type Session = { user: User; csrf_token: string; expires_at: string }
-export type Message = { id: string; turn_id: string; role: 'user' | 'assistant'; content: string; created_at: string }
+export type Message = { id: string; turn_id: string; role: 'user' | 'assistant'; content: string; created_at: string; blocks?: MessageBlock[] }
 
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message) }

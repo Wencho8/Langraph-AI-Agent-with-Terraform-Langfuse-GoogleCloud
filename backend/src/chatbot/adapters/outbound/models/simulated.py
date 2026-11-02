@@ -15,7 +15,9 @@ class SimulatedModel:
         self.chunk_delay = chunk_delay
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[ModelEvent]:
-        name = ElementTree.fromstring(request.profile_context).findtext("display_name") if request.profile_context else None
+        # The context may include both user_profile and runtime_date XML fragments.
+        context = ElementTree.fromstring(f"<context>{request.profile_context or ''}</context>")
+        name = context.findtext("user_profile/display_name")
         latest = request.items[-1].data["content"]
         parts = [
             f"Simulated reply{' for ' + name if name else ''}. ",

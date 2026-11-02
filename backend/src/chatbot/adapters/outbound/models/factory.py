@@ -13,4 +13,5 @@ def create_model(settings: Settings) -> ChatModel:
         api_key=settings.openai_api_key.get_secret_value().strip(),
         max_retries=0, timeout=settings.model_timeout_seconds,
     )
-    return OpenAIModel(client, model=settings.model_name, max_output_tokens=settings.model_max_output_tokens)
+    return OpenAIModel(client, model=settings.model_name, max_output_tokens=settings.model_max_output_tokens,
+                       reasoning_effort=settings.model_reasoning_effort)

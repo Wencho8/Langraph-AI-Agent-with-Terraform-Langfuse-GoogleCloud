@@ -1,14 +1,21 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, ApiError, errorMessage, type Message, type Session } from '../api/client'
-import { streamChat } from '../api/stream'
+import { api, ApiError, errorMessage, type Message, type Session, type MessageBlock, appendText } from '../api/client'
+import { streamChat, finishPending, type ToolStep } from '../api/stream'
+import ToolActivity from './ToolActivity'
 import Icon from '../Icon'
-import MarkdownMessage from './MarkdownMessage'
+import AssistantMessage from './AssistantMessage'
 
-type DisplayMessage = Message & { unsaved?: boolean }
-const suggestions = ['Quiero organizar mis gastos', '¿Cómo armo un fondo de emergencia?', 'Quiero empezar a ahorrar']
+type DisplayMessage = Message & { unsaved?: boolean; streaming?: boolean }
+const suggestions = [
+  { label: 'Ver un gráfico de YPF', prompt: 'Mostrame un gráfico de YPFD del último mes y explicame su evolución.' },
+  { label: 'Comparar AL30 y GD30', prompt: 'Compará AL30 y GD30 durante el último mes con un gráfico base 100.' },
+  { label: 'Entender una ON', prompt: '¿Qué es una obligación negociable y qué riesgos debería revisar?' },
+]
 
 export default function Chat({ session, onExpired }: { session: Session; onExpired: () => void }) {
   const [items, setItems] = useState<DisplayMessage[]>([])
+  const [activity, setActivity] = useState<Record<string, ToolStep[]>>({})
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -40,7 +47,7 @@ export default function Chat({ session, onExpired }: { session: Session; onExpir
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  useEffect(() => { tail.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [items])
+  useEffect(() => { tail.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [items, activity])
 
   async function send(event: FormEvent) {
     event.preventDefault()
@@ -52,18 +59,35 @@ export default function Chat({ session, onExpired }: { session: Session; onExpir
     stream.current = controller
     const userId = crypto.randomUUID(), answerId = crypto.randomUUID()
     let text = '', turnId = '', started = false
+    let blocks: MessageBlock[] = []
     setItems(previous => [...previous,
       { id: userId, turn_id: '', role: 'user', content: message, created_at: '' },
-      { id: answerId, turn_id: '', role: 'assistant', content: '', created_at: '' },
+      { id: answerId, turn_id: '', role: 'assistant', content: '', created_at: '', streaming: true },
     ])
     try {
       await streamChat(message, session.csrf_token, controller.signal, event => {
         if (version !== epoch.current) return
-        if (event.event === 'started') { started = true; turnId = event.data.turn_id }
+        if (event.event === 'started') {
+          started = true; turnId = event.data.turn_id
+          setItems(previous => previous.map(item => item.id === answerId ? { ...item, turn_id: turnId } : item))
+        }
+        if (event.event === 'tool_status') {
+          const update = event.data
+          setActivity(previous => {
+            const steps = previous[turnId] || []
+            const next = steps.some(step => step.id === update.id) ? steps.map(step => step.id === update.id ? update : step) : [...steps, update]
+            return { ...previous, [turnId]: next }
+          })
+        }
         if (event.event === 'error') throw new ApiError(event.data.code === 'unauthenticated' ? 401 : 502, event.data.code, event.data.message)
+        if (event.event === 'chart') {
+          blocks = [...blocks, event.data.block]
+          setItems(previous => previous.map(item => item.id === answerId ? { ...item, blocks, turn_id: turnId } : item))
+        }
         if (event.event === 'delta' || event.event === 'completed') {
+          blocks = event.event === 'delta' ? appendText(blocks, event.data.text) : event.data.blocks || blocks
           text = event.event === 'delta' ? text + event.data.text : event.data.text
-          setItems(previous => previous.map(item => item.id === answerId ? { ...item, content: text, turn_id: turnId } : item))
+          setItems(previous => previous.map(item => item.id === answerId ? { ...item, content: text, blocks, turn_id: turnId } : item))
         }
       })
       if (version === epoch.current) await loadHistory(version, controller.signal)
@@ -74,12 +98,16 @@ export default function Chat({ session, onExpired }: { session: Session; onExpir
       if (version !== epoch.current) return
       setError(errorMessage(error))
       if (!started) setDraft(message)
-      if (started && text) {
-        const partial: DisplayMessage = { id: answerId, turn_id: turnId, role: 'assistant', content: text, created_at: '', unsaved: true }
+      if (started && (text || blocks.length || turnId)) {
+        const partial: DisplayMessage = { id: answerId, turn_id: turnId, role: 'assistant', content: text, blocks, created_at: '', unsaved: true }
         setItems(previous => [...(history || previous.filter(item => item.id !== answerId)), partial])
       }
     } finally {
-      if (version === epoch.current) { busyRef.current = false; setBusy(false); stream.current = null }
+      if (version === epoch.current) {
+        setActivity(previous => ({ ...previous, [turnId]: finishPending(previous[turnId] || []) }))
+        setItems(previous => previous.map(item => item.id === answerId ? { ...item, streaming: false } : item))
+        busyRef.current = false; setBusy(false); stream.current = null
+      }
     }
   }
 
@@ -109,19 +137,24 @@ export default function Chat({ session, onExpired }: { session: Session; onExpir
       <div className="flex-1 overflow-y-auto px-5 py-6 sm:px-8" aria-label="Conversación" aria-busy={busy || loading}>
         {loading ? <p className="mt-16 text-center text-sm text-slate-400">Cargando conversación…</p> : items.length === 0 && !historyFailed ? <section className="mx-auto flex min-h-[60%] max-w-2xl flex-col items-center justify-center py-10 text-center">
           <span className="mb-6 grid size-14 place-items-center rounded-2xl border border-indigo-100 bg-indigo-50 text-indigo-500"><Icon name="spark" className="size-7" /></span><h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Hola, {session.user.display_name}.</h2><p className="mt-2 text-sm text-slate-400">¿En qué te ayudo?</p>
-          <div className="mt-8 grid w-full gap-2 sm:grid-cols-3">{suggestions.map(text => <button className="group flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-left text-xs leading-relaxed text-slate-500 transition hover:border-indigo-200 hover:bg-indigo-50/40 hover:text-slate-800" key={text} onClick={() => setDraft(text)}>{text}<Icon name="chevron" className="mt-0.5 size-3 shrink-0 text-slate-300 group-hover:text-indigo-400" /></button>)}</div>
+          <div className="mt-8 grid w-full gap-2 sm:grid-cols-3">{suggestions.map(suggestion => <button className="group flex items-start justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-left text-xs leading-relaxed text-slate-500 transition hover:border-indigo-200 hover:bg-indigo-50/40 hover:text-slate-800" key={suggestion.label} onClick={() => setDraft(suggestion.prompt)}>{suggestion.label}<Icon name="chevron" className="mt-0.5 size-3 shrink-0 text-slate-300 group-hover:text-indigo-400" /></button>)}</div>
         </section> : null}
         <div className="mx-auto max-w-3xl space-y-6">{items.map(item => <article key={item.id} className={'flex gap-3 ' + (item.role === 'user' ? 'justify-end' : 'justify-start')}>
           {item.role === 'assistant' && <span className="mt-1 grid size-8 shrink-0 place-items-center rounded-xl border border-indigo-100 bg-indigo-50 text-indigo-500"><Icon name="spark" className="size-4" /></span>}
-          <div className={'min-w-0 max-w-[88%] ' + (item.role === 'user' ? 'rounded-2xl rounded-tr-sm bg-slate-100 px-4 py-3' : 'py-1.5')}>
+          <div className={'min-w-0 max-w-[88%] ' + (item.role === 'user' ? 'rounded-2xl rounded-tr-sm bg-slate-100 px-4 py-3' : 'w-full py-1.5')}>
             <span className="mb-2 block text-[10px] font-medium text-slate-400">{item.role === 'assistant' ? 'Asistente' : 'Vos'}</span>
-            {item.content ? item.role === 'assistant' ? <MarkdownMessage content={item.content} /> : <p className="whitespace-pre-wrap text-[13px] leading-7 wrap-anywhere text-slate-700 sm:text-sm">{item.content}</p> : <span className="inline-flex items-center gap-2 text-xs text-slate-400" role="status"><span className="size-1.5 animate-pulse rounded-full bg-indigo-400" />Pensando…</span>}
+            {item.role === 'assistant' && item.streaming && <span className="mb-1 inline-flex items-center gap-2 text-xs text-slate-400" role="status"><span className="size-1.5 animate-pulse rounded-full bg-indigo-400" />{item.content ? 'Respondiendo…' : 'Pensando…'}</span>}
+            {item.role === 'assistant' && <ToolActivity active={!!item.streaming} steps={activity[item.turn_id] || []} expanded={!collapsed[item.turn_id]} onToggle={() => setCollapsed(previous => ({ ...previous, [item.turn_id]: !previous[item.turn_id] }))} />}
+            {(item.content || item.blocks?.length) ? item.role === 'assistant' ? <AssistantMessage content={item.content} blocks={item.blocks} /> : <p className="whitespace-pre-wrap text-[13px] leading-7 wrap-anywhere text-slate-700 sm:text-sm">{item.content}</p> : null}
             {item.unsaved && <small className="mt-2 block text-[10px] text-amber-600">Respuesta parcial · no guardada</small>}
           </div>
         </article>)}</div><div ref={tail} />
       </div>
       <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pb-4 pt-2 sm:px-6 sm:pb-5">
         {error && <div className="mb-3 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-xs leading-relaxed text-red-700" role="alert">{error}{historyFailed && <button className="mt-1 block underline" onClick={() => { setLoading(true); setError(''); void loadHistory() }}>Reintentar historial</button>}</div>}
+        {!loading && !historyFailed && items.length > 0 && <div className="mb-3 flex flex-wrap gap-2" aria-label="Sugerencias para continuar">
+          {suggestions.slice(0, 2).map(suggestion => <button type="button" key={suggestion.label} disabled={busy || loggingOut} onClick={() => setDraft(suggestion.prompt)} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] text-slate-500 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600 focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"><Icon name="spark" className="size-3 text-indigo-400" />{suggestion.label}</button>)}
+        </div>}
         <form className="rounded-2xl border border-slate-200 bg-white px-4 pb-3 pt-4 shadow-lg shadow-slate-200/25 transition focus-within:border-indigo-300 focus-within:ring-3 focus-within:ring-indigo-50" onSubmit={send}>
           <label className="sr-only" htmlFor="message">Tu mensaje</label>
           <textarea className="min-h-12 max-h-40 w-full resize-none border-0 bg-transparent text-sm leading-relaxed text-slate-800 outline-none placeholder:text-slate-400 disabled:cursor-wait" id="message" rows={2} value={draft} maxLength={8000} disabled={busy || loading || historyFailed || loggingOut} placeholder={busy ? 'El asistente está respondiendo…' : 'Escribí tu mensaje…'} onChange={event => setDraft(event.target.value)}

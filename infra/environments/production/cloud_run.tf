@@ -1,16 +1,22 @@
 locals {
   backend_environment = {
-    APP_ENV               = "production"
-    AUTH_MODE             = "session"
-    APP_ORIGIN            = var.frontend_origin
-    SESSION_COOKIE_SECURE = "true"
-    DATABASE_MODE         = "cloud_sql"
-    CLOUD_SQL_INSTANCE    = google_sql_database_instance.chatbot.connection_name
-    DATABASE_NAME         = google_sql_database.chatbot.name
-    DATABASE_USER         = google_sql_user.runtime.name
-    DATABASE_POOL_SIZE    = "6"
-    MAX_ACTIVE_TURNS      = "4"
-    MODEL                 = var.model
+    APP_ENV                 = "production"
+    AUTH_MODE               = "session"
+    APP_ORIGIN              = var.frontend_origin
+    SESSION_COOKIE_SECURE   = "true"
+    DATABASE_MODE           = "cloud_sql"
+    CLOUD_SQL_INSTANCE      = google_sql_database_instance.chatbot.connection_name
+    DATABASE_NAME           = google_sql_database.chatbot.name
+    DATABASE_USER           = google_sql_user.runtime.name
+    DATABASE_POOL_SIZE      = "6"
+    MAX_ACTIVE_TURNS        = "4"
+    MODEL                   = var.model
+    MODEL_REASONING_EFFORT  = var.model_reasoning_effort
+    MODEL_MAX_OUTPUT_TOKENS = "8192"
+    TURN_TIMEOUT_SECONDS    = "240"
+    MODEL_TIMEOUT_SECONDS   = "120"
+    TOOL_TIMEOUT_SECONDS    = "10"
+    MARKET_DATA_PROVIDER    = var.enable_iol ? "iol" : "disabled"
   }
 }
 
@@ -37,7 +43,7 @@ resource "google_cloud_run_v2_service" "backend" {
     service_account                  = google_service_account.runtime.email
     execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
     max_instance_request_concurrency = 8
-    timeout                          = "60s"
+    timeout                          = "270s"
 
     containers {
       image = var.backend_image
@@ -69,6 +75,19 @@ resource "google_cloud_run_v2_service" "backend" {
           secret_key_ref {
             secret  = google_secret_manager_secret.openai_api_key.secret_id
             version = var.openai_secret_version
+          }
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_iol ? [var.iol_secret_version] : []
+        content {
+          name = "IOL_CREDENTIALS"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.iol_credentials.secret_id
+              version = env.value
+            }
           }
         }
       }
@@ -106,6 +125,7 @@ resource "google_cloud_run_v2_service" "backend" {
     google_project_service.required["run.googleapis.com"],
     google_project_iam_member.runtime_sql,
     google_secret_manager_secret_iam_member.runtime_openai,
+    google_secret_manager_secret_iam_member.runtime_iol,
   ]
 }
 

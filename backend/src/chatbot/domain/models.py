@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -17,6 +17,7 @@ class Message:
     role: Literal["user", "assistant"]
     content: str
     created_at: datetime
+    blocks: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -28,5 +29,5 @@ class Turn:
 
 @dataclass(frozen=True)
 class ChatEvent:
-    kind: Literal["started", "delta", "completed", "error"]
+    kind: Literal["started", "delta", "chart", "tool_status", "completed", "error"]
     data: dict[str, Any]
