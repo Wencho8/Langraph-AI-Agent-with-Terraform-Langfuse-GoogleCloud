@@ -1,5 +1,5 @@
 locals {
-  backend_environment = {
+  backend_environment = merge({
     APP_ENV                 = "production"
     AUTH_MODE               = "session"
     APP_ORIGIN              = var.frontend_origin
@@ -16,7 +16,10 @@ locals {
     MODEL_TIMEOUT_SECONDS   = "120"
     TOOL_TIMEOUT_SECONDS    = "10"
     MARKET_DATA_PROVIDER    = var.enable_iol ? "iol" : "disabled"
-  }
+    }, var.enable_langfuse ? {
+    LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
+    LANGFUSE_BASE_URL   = var.langfuse_base_url
+  } : {})
 }
 
 resource "google_cloud_run_v2_service" "backend" {
@@ -30,6 +33,11 @@ resource "google_cloud_run_v2_service" "backend" {
   # image and explicit revision traffic (including rollback).
   lifecycle {
     ignore_changes = [template[0].containers[0].image, traffic]
+
+    precondition {
+      condition     = !var.enable_langfuse || trimspace(var.langfuse_public_key) != ""
+      error_message = "Set langfuse_public_key before enabling Langfuse."
+    }
   }
 
   # Service-level cap across revisions receiving traffic, not just one revision.
@@ -91,6 +99,19 @@ resource "google_cloud_run_v2_service" "backend" {
         }
       }
 
+      dynamic "env" {
+        for_each = var.enable_langfuse ? [var.langfuse_secret_version] : []
+        content {
+          name = "LANGFUSE_SECRET_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.langfuse_secret_key.secret_id
+              version = env.value
+            }
+          }
+        }
+      }
+
       # Lifespan checks SQL/schema before serving; this probe never calls OpenAI.
       startup_probe {
         initial_delay_seconds = 0
@@ -125,6 +146,7 @@ resource "google_cloud_run_v2_service" "backend" {
     google_project_iam_member.runtime_sql,
     google_secret_manager_secret_iam_member.runtime_openai,
     google_secret_manager_secret_iam_member.runtime_iol,
+    google_secret_manager_secret_iam_member.runtime_langfuse,
   ]
 }
 

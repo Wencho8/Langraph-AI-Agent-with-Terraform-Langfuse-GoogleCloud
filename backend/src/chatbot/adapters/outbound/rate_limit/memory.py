@@ -2,10 +2,11 @@ from collections import defaultdict, deque
 from time import monotonic
 from uuid import UUID
 
+from chatbot.application.ports import RateLimiter
 from chatbot.domain.errors import RateLimited
 
 
-class MemoryRateLimiter:
+class MemoryRateLimiter(RateLimiter):
     """Single-event-loop, rolling-window limiter. Local/test only; resets on restart."""
 
     def __init__(self, requests: int, window_seconds: float):

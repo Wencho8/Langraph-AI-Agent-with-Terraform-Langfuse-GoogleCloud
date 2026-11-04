@@ -1,8 +1,9 @@
 from collections.abc import AsyncIterator, Sequence
+from datetime import datetime
 from typing import Literal, Protocol
 from uuid import UUID
 
-from chatbot.domain.agent import AgentEvent, AgentRequest, ChatHistory, ModelEvent, ModelItem, ModelRequest
+from chatbot.domain.agent import AgentEvent, AgentRequest, ChatHistory, ModelEvent, ModelItem, ModelRequest, TokenUsage
 from chatbot.domain.models import Message, Turn, UserProfile
 from chatbot.domain.auth import Account, AuthSession
 
@@ -40,12 +41,27 @@ class ConversationRepository(Protocol):
     ) -> None: ...
 
 
+class TraceStep(Protocol):
+    def finish(self, status: str, *, usage: TokenUsage | None = None, first_text: datetime | None = None) -> None: ...
+
+
+class TurnTrace(Protocol):
+    def model(self, name: str, reasoning_effort: str | None) -> TraceStep | None: ...
+    def tool(self, name: str) -> TraceStep | None: ...
+    def finish(self, status: str, *, error_code: str | None, duration_ms: float,
+               first_chunk_ms: float | None, usage: dict) -> None: ...
+
+
+class TurnTracing(Protocol):
+    def start_turn(self, request_id: str, turn_id: str) -> TurnTrace | None: ...
+
+
 class AgentRunner(Protocol):
     provider: str
     model_name: str
     prompt_revision: str
 
-    def stream(self, request: AgentRequest) -> AsyncIterator[AgentEvent]: ...
+    def stream(self, request: AgentRequest, *, trace: TurnTrace | None = None) -> AsyncIterator[AgentEvent]: ...
 
 
 class ChatModel(Protocol):

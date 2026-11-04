@@ -40,6 +40,9 @@ class ToolRegistry:
         events, self._events = self._events, []
         return events
 
+    def __contains__(self, name: str) -> bool:
+        return name in self._tools
+
     @property
     def definitions(self) -> tuple[ToolDefinition, ...]:
         return tuple(tool.definition for tool in self._tools.values())

@@ -16,6 +16,7 @@ from chatbot.adapters.outbound.rate_limit.auth import MemoryAuthLimiter
 from chatbot.application.auth import AuthService
 from chatbot.adapters.outbound.agent.graph import LangGraphAgent
 from chatbot.adapters.outbound.models.factory import create_model
+from chatbot.adapters.outbound.observability.langfuse import LangfuseTracing
 from chatbot.adapters.outbound.identity.development import DevelopmentIdentity
 from chatbot.adapters.outbound.postgres.database import Database
 from chatbot.adapters.outbound.postgres.locks import PostgresConversationLock
@@ -39,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database = await Database.open(settings, settings.max_active_turns)
         model = None
         market = None
+        tracing = None
         try:
             prompt = load_prompt()
             repository = PostgresConversationRepository(database)
@@ -58,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if settings.market_data_provider == "iol":
                 credentials = json.loads(settings.iol_credentials.get_secret_value())
                 market = IolMarketData(credentials["username"], credentials["password"])
+            tracing = LangfuseTracing.from_settings(settings)
             agent = LangGraphAgent(
                 model, prompt=prompt, tools_factory=(lambda: market_tools(market)) if market else ToolRegistry,
                 max_model_calls=settings.max_model_calls, max_tool_calls=settings.max_tool_calls,
@@ -69,7 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.orchestrator = ChatOrchestrator(
                 repository, PostgresConversationLock(database), agent,
                 MemoryRateLimiter(settings.rate_limit_requests, settings.rate_limit_window_seconds),
-                capacity=settings.max_active_turns, turn_timeout=settings.turn_timeout_seconds,
+                capacity=settings.max_active_turns, turn_timeout=settings.turn_timeout_seconds, tracing=tracing,
             )
             yield
         finally:
@@ -81,7 +84,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     if market is not None:
                         await market.close()
                 finally:
-                    await database.close()
+                    try:
+                        await database.close()
+                    finally:
+                        if tracing is not None:
+                            await tracing.close()
 
     app = FastAPI(title="Agent Chatbot — Local Backend", version="0.1.0", lifespan=lifespan)
     app.add_exception_handler(ChatError, application_error)

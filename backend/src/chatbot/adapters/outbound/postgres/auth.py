@@ -1,13 +1,14 @@
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from chatbot.application.ports import AuthRepository
 from chatbot.domain.auth import Account, AuthSession
 from chatbot.domain.errors import AccountBlocked, Forbidden, UnknownUser, UsernameTaken
 from chatbot.domain.models import UserProfile
 from .models import AuthSessionRecord, User
 
 
-class PostgresAuthRepository:
+class PostgresAuthRepository(AuthRepository):
     def __init__(self, database):
         self.database = database
 

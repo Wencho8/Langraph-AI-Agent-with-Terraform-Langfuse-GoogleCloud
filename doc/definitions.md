@@ -84,6 +84,8 @@ During generation the composer/send action is disabled, and terminal events/erro
 
 Use ports and adapters with a small application orchestrator and clear separation of responsibilities.
 
+Concrete backend adapters declare the protocol they implement as a base class, such as `LangfuseTracing(TurnTracing)`.
+
 - **Inbound adapters:** expose application capabilities to callers. The HTTP adapter uses FastAPI routes for request validation, authentication integration, and streaming responses.
 - **Application orchestrator:** coordinates conversation access, admission limits, locking, history loading, agent execution, and persistence.
 - **Ports:** describe the capabilities the application needs, such as conversation persistence, agent execution, coordination, and rate limiting.

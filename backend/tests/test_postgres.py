@@ -54,7 +54,7 @@ async def test_fast_completion_does_not_cancel_an_inflight_lock_query(database):
     class FastAgent:
         provider, model_name, prompt_revision = 'test', 'fast', 'fixture'
 
-        async def stream(self, request):
+        async def stream(self, request, *, trace=None):
             await checking.wait()
             yield AgentCompleted('Answer', (), {})
 

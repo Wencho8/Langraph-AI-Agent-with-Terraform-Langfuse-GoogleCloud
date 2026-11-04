@@ -2,10 +2,11 @@ import asyncio
 from collections.abc import AsyncIterator
 from xml.etree import ElementTree
 
+from chatbot.application.ports import ChatModel
 from chatbot.domain.agent import ModelCompleted, ModelEvent, ModelItem, ModelRequest, TextDelta
 
 
-class SimulatedModel:
+class SimulatedModel(ChatModel):
     """Deterministic async transport exercise, not an evaluation of finance behavior."""
 
     provider = "simulated"

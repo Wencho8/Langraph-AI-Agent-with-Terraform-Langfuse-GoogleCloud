@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from chatbot.application.ports import ConversationRepository
+from chatbot.application.ports import ConversationRepository, IdentityProvider
 from chatbot.domain.errors import UnknownUser
 from chatbot.domain.models import UserProfile
 
@@ -10,7 +10,7 @@ DEVELOPMENT_USERS = {
 }
 
 
-class DevelopmentIdentity:
+class DevelopmentIdentity(IdentityProvider):
     def __init__(self, repository: ConversationRepository, *, enabled: bool, environment: str):
         if not enabled or environment not in {"local", "test"}:
             raise ValueError("Explicitly enabled local/test development identity is required")

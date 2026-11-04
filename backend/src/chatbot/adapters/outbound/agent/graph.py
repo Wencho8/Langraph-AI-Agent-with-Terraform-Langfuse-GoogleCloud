@@ -3,7 +3,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from time import monotonic
 from typing import TypedDict
@@ -12,7 +12,7 @@ from langgraph.config import get_stream_writer
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 
-from chatbot.application.ports import ChatModel
+from chatbot.application.ports import AgentRunner, ChatModel, TurnTrace
 from chatbot.application.tools import ToolRegistry
 from chatbot.domain.agent import (
     AgentCompleted, AgentEvent, AgentRequest, ModelCallFinished, ModelCallStarted,
@@ -26,6 +26,7 @@ from chatbot.domain.presentation import ChartReady, append_text
 class AgentState(TypedDict):
     tools: ToolRegistry
     request: AgentRequest
+    trace: TurnTrace | None
     items: list[ModelItem]
     transcript: list[ModelItem]
     response: str
@@ -36,7 +37,7 @@ class AgentState(TypedDict):
     calls: list[dict]
 
 
-class LangGraphAgent:
+class LangGraphAgent(AgentRunner):
     def __init__(
         self, model: ChatModel, *, prompt: Prompt, tools: ToolRegistry | None = None,
         max_model_calls: int = 4, max_tool_calls: int = 8, recursion_limit: int = 12,
@@ -71,6 +72,9 @@ class LangGraphAgent:
                 "\n<runtime_date>" + datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date().isoformat() + "</runtime_date>",
                 tuple(state["items"]), state["tools"].definitions,
             )
+            trace = state["trace"]
+            model_trace = trace.model(model.name, self.reasoning_effort) if trace else None
+            model_status, first_text = "failed", None
             try:
                 async with asyncio.timeout(min(model_timeout, remaining)):
                     async with aclosing(model.stream(model_request)) as events:
@@ -78,23 +82,38 @@ class LangGraphAgent:
                             if completion is not None:
                                 raise InvalidModelResponse()
                             if isinstance(event, TextDelta):
+                                if model_trace and first_text is None and event.text:
+                                    first_text = datetime.now(timezone.utc)
                                 parts.append(event.text)
                                 writer(event)
                             elif isinstance(event, ModelCompleted):
                                 completion = event
                             else:
                                 raise InvalidModelResponse()
+                if completion is None or completion.text != "".join(parts):
+                    raise InvalidModelResponse()
+                if not completion.tool_calls and not completion.text.strip():
+                    raise InvalidModelResponse()
+                ids = [call.id for call in completion.tool_calls]
+                if len(set(ids)) != len(ids) or set(ids).intersection(state["seen_calls"]):
+                    raise InvalidToolCall()
+                model_status = "completed"
             except TimeoutError as exc:
+                model_status = "timed_out"
                 if remaining <= model_timeout:
                     raise TurnTimedOut() from exc
                 raise ModelTimedOut() from exc
-            if completion is None or completion.text != "".join(parts):
-                raise InvalidModelResponse()
-            if not completion.tool_calls and not completion.text.strip():
-                raise InvalidModelResponse()
-            ids = [call.id for call in completion.tool_calls]
-            if len(set(ids)) != len(ids) or set(ids).intersection(state["seen_calls"]):
-                raise InvalidToolCall()
+            except ModelTimedOut:
+                model_status = "timed_out"
+                raise
+            except asyncio.CancelledError:
+                model_status = "cancelled"
+                raise
+            finally:
+                if model_trace:
+                    model_trace.finish(
+                        model_status, usage=completion.usage if completion else None, first_text=first_text,
+                    )
             metrics = {
                 "duration_ms": round((monotonic() - started) * 1000, 2),
                 "usage": asdict(completion.usage), "request_id": completion.request_id,
@@ -109,6 +128,7 @@ class LangGraphAgent:
 
         async def run_tools(state: AgentState):
             count, results = state["tool_calls"], []
+            trace, tools = state["trace"], state["tools"]
             for call in state["pending"]:
                 await check(state["request"])
                 remaining = state["request"].deadline - asyncio.get_running_loop().time()
@@ -118,7 +138,9 @@ class LangGraphAgent:
                 if count > max_tool_calls:
                     raise ExecutionLimit()
                 get_stream_writer()(ToolCallStarted(count, call.id, call.name))
+                tool_trace = trace.tool(call.name) if trace and call.name in tools else None
                 tool_started, tool_status = monotonic(), "failed"
+                timed_out = False
                 try:
                     async with asyncio.timeout(min(tool_timeout, remaining)):
                         output = await state["tools"].execute(call)
@@ -130,10 +152,13 @@ class LangGraphAgent:
                     tool_status = "cancelled"
                     raise
                 except TimeoutError as exc:
+                    timed_out = True
                     if remaining <= tool_timeout:
                         raise TurnTimedOut() from exc
                     raise ToolTimedOut() from exc
                 finally:
+                    if tool_trace:
+                        tool_trace.finish("timed_out" if timed_out else tool_status)
                     get_stream_writer()(ToolCallFinished(call.id, call.name, tool_status,
                                                         round((monotonic() - tool_started) * 1000, 2)))
                 results.append(ModelItem("tool_result", {"call_id": call.id, "output": output}, self.provider))
@@ -152,14 +177,14 @@ class LangGraphAgent:
         graph.add_edge("tools", "model")
         self.graph = graph.compile()
 
-    async def stream(self, request: AgentRequest) -> AsyncIterator[AgentEvent]:
+    async def stream(self, request: AgentRequest, *, trace: TurnTrace | None = None) -> AsyncIterator[AgentEvent]:
         final = None
         blocks = []
         try:
             stream = self.graph.astream(
                 {"request": request, "tools": self.tools_factory(), "items": list(request.history.items), "transcript": [],
                  "response": "", "pending": [], "model_calls": 0, "tool_calls": 0,
-                 "seen_calls": [], "calls": []},
+                 "seen_calls": [], "calls": [], "trace": trace},
                 config={"recursion_limit": self.recursion_limit}, stream_mode=["custom", "values"],
             )
             async with aclosing(stream):

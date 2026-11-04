@@ -41,3 +41,10 @@ resource "google_secret_manager_secret_iam_member" "runtime_iol" {
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.runtime.email}"
 }
+
+resource "google_secret_manager_secret_iam_member" "runtime_langfuse" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.langfuse_secret_key.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.runtime.email}"
+}

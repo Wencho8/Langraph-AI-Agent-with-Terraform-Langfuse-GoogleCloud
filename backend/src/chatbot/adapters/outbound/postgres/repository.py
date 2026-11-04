@@ -7,6 +7,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
+from chatbot.application.ports import ConversationRepository
 from chatbot.domain.agent import ChatHistory, ModelItem
 from chatbot.domain.errors import Unavailable
 from chatbot.domain.models import Message, Turn, UserProfile
@@ -18,7 +19,7 @@ def to_message(row: MessageRecord) -> Message:
     return Message(row.id, row.turn_id, row.role, row.content, row.created_at, row.blocks)
 
 
-class PostgresConversationRepository:
+class PostgresConversationRepository(ConversationRepository):
     def __init__(self, database: Database):
         self.database = database
         configuration = Path("alembic.ini")

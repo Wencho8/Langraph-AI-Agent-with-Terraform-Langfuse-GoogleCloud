@@ -4,11 +4,12 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from chatbot.application.ports import ConversationLock, LockLease
 from chatbot.domain.errors import SessionBusy, Unavailable
 from .database import Database
 
 
-class PostgresLease:
+class PostgresLease(LockLease):
     def __init__(self, connection, key: int, backend_pid: int):
         self.connection = connection
         self.key = key
@@ -46,7 +47,7 @@ class PostgresLease:
             await self.connection.close()
 
 
-class PostgresConversationLock:
+class PostgresConversationLock(ConversationLock):
     def __init__(self, database: Database):
         self.database = database
 

@@ -9,3 +9,7 @@ model                 = "openai:gpt-6.1-terra"
 openai_secret_version = "1"
 enable_iol            = true
 iol_secret_version    = "1"
+
+enable_langfuse         = true
+langfuse_public_key     = "pk-lf-d0161688-f59c-4259-8350-7e3ddc2b8dcf"
+langfuse_secret_version = "1"

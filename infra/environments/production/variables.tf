@@ -87,3 +87,37 @@ variable "model_reasoning_effort" {
     error_message = "Unsupported reasoning effort."
   }
 }
+
+variable "enable_langfuse" {
+  description = "Enable Langfuse after installing the secret key version."
+  type        = bool
+  default     = false
+}
+
+variable "langfuse_public_key" {
+  description = "Non-secret Langfuse project key."
+  type        = string
+  default     = ""
+}
+
+variable "langfuse_base_url" {
+  description = "HTTPS origin of the Langfuse project."
+  type        = string
+  default     = "https://us.cloud.langfuse.com"
+
+  validation {
+    condition     = can(regex("^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]+)?/?$", var.langfuse_base_url))
+    error_message = "langfuse_base_url must be an HTTPS origin."
+  }
+}
+
+variable "langfuse_secret_version" {
+  description = "Numeric Secret Manager version populated outside Terraform."
+  type        = string
+  default     = "1"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*$", var.langfuse_secret_version))
+    error_message = "langfuse_secret_version must be a positive numeric version."
+  }
+}

@@ -57,6 +57,9 @@ class Settings(DatabaseSettings):
     simulated_chunk_delay_seconds: float = Field(default=0.04, ge=0, le=10)
     model: str = "simulated"
     openai_api_key: SecretStr | None = None
+    langfuse_public_key: str = ""
+    langfuse_secret_key: SecretStr | None = None
+    langfuse_base_url: str = ""
     model_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "high"
     market_data_provider: Literal["disabled", "iol"] = "disabled"
     iol_credentials: SecretStr | None = None

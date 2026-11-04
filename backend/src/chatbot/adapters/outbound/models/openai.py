@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 import httpx
 import openai
 
+from chatbot.application.ports import ChatModel
 from chatbot.domain.agent import ModelCompleted, ModelEvent, ModelItem, ModelRequest, TextDelta, TokenUsage, ToolCall
 from chatbot.domain.errors import (
     ContextLimit, InvalidModelResponse, ModelTimedOut, OutputLimit,
@@ -38,7 +39,7 @@ def token_usage(value) -> TokenUsage:
     )
 
 
-class OpenAIModel:
+class OpenAIModel(ChatModel):
     provider = "openai"
 
     def __init__(self, client, *, model: str, max_output_tokens: int, reasoning_effort: str | None = None):

@@ -1,10 +1,11 @@
 from collections import deque
 from time import monotonic
 
+from chatbot.application.ports import AuthLimiter
 from chatbot.domain.errors import AuthRateLimited
 
 
-class MemoryAuthLimiter:
+class MemoryAuthLimiter(AuthLimiter):
     def __init__(self, window: float = 60, capacity: int = 4096):
         self.window, self.capacity, self.entries = window, capacity, {}
 

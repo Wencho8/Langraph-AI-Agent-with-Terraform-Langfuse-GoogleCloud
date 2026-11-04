@@ -1,18 +1,19 @@
 import asyncio
 
 import anyio
-from argon2 import PasswordHasher
+from argon2 import PasswordHasher as Argon2PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from argon2.low_level import Type
 
+from chatbot.application.ports import PasswordHasher
 from chatbot.domain.errors import AuthBusy
 
 
-class Argon2Passwords:
+class Argon2Passwords(PasswordHasher):
     """Two admitted CPU operations; cancellation waits for the hash before freeing its slot."""
 
     def __init__(self):
-        self.hasher = PasswordHasher(memory_cost=19456, time_cost=2, parallelism=1, type=Type.ID)
+        self.hasher = Argon2PasswordHasher(memory_cost=19456, time_cost=2, parallelism=1, type=Type.ID)
         self.active = 0
 
     async def _run(self, function, *args):

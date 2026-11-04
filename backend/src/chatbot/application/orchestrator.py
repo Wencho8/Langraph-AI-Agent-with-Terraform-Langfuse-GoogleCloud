@@ -8,7 +8,7 @@ from uuid import UUID
 
 import anyio
 
-from chatbot.application.ports import AgentRunner, ConversationLock, ConversationRepository, LockLease, RateLimiter
+from chatbot.application.ports import AgentRunner, ConversationLock, ConversationRepository, LockLease, RateLimiter, TurnTracing
 from chatbot.domain.agent import (
     AgentCompleted, AgentEvent, AgentRequest, ModelCallFinished, ModelCallStarted,
     TextDelta, ToolCallStarted, ToolCallFinished, aggregate_usage,
@@ -28,7 +28,7 @@ class ChatOrchestrator:
     def __init__(
         self, repository: ConversationRepository, locks: ConversationLock,
         agent: AgentRunner, limiter: RateLimiter, *, capacity: int,
-        turn_timeout: float,
+        turn_timeout: float, tracing: TurnTracing | None = None,
     ):
         self.repository = repository
         self.locks = locks
@@ -36,6 +36,7 @@ class ChatOrchestrator:
         self.limiter = limiter
         self.capacity = capacity
         self.turn_timeout = turn_timeout
+        self.tracing = tracing
         self.active = 0
 
     async def history(self, user_id: UUID) -> list[Message]:
@@ -90,6 +91,7 @@ class ChatExecution:
         self.calls = []
         self.result = None
         self.check_access = check_access
+        self.trace = owner.tracing.start_turn(request_id, str(turn.id)) if owner.tracing else None
 
     async def check(self):
         await self.lease.check()
@@ -124,7 +126,7 @@ class ChatExecution:
         next_chunk = None
         finished = False
         request = AgentRequest(self.user, self.history, self.deadline, self.check)
-        async with aclosing(self.owner.agent.stream(request)) as stream:
+        async with aclosing(self.owner.agent.stream(request, trace=self.trace)) as stream:
             try:
                 while True:
                     next_chunk = asyncio.create_task(anext(stream))
@@ -211,9 +213,11 @@ class ChatExecution:
         self.closed = True
         # Starlette cancels response tasks on disconnect. Shield finite cleanup from that scope.
         with anyio.CancelScope(shield=True):
+            status = "completed" if self.completed else (
+                "cancelled" if self.error_code == "client_disconnected" else "failed"
+            )
             try:
                 if not self.completed:
-                    status = "cancelled" if self.error_code == "client_disconnected" else "failed"
                     try:
                         async with asyncio.timeout(5):
                             await self.owner.repository.finish(
@@ -226,11 +230,22 @@ class ChatExecution:
                     await self.lease.release()
                 finally:
                     self.owner.active -= 1
+                    duration_ms = round((monotonic() - self.started) * 1000, 2)
+                    metadata = self.metadata()
+                    if self.trace is not None:
+                        error_code = None if self.completed else self.error_code
+                        trace_status = status
+                        if error_code in {"turn_timeout", "model_timeout", "tool_timeout"}:
+                            trace_status = "timed_out"
+                        self.trace.finish(
+                            trace_status, error_code=error_code, duration_ms=duration_ms,
+                            first_chunk_ms=self.first_chunk_ms, usage=metadata["usage"],
+                        )
                     log_event(
                         "turn_finished", request_id=self.request_id, turn_id=str(self.turn.id),
                         status="completed" if self.completed else self.error_code,
-                        duration_ms=round((monotonic() - self.started) * 1000, 2),
+                        duration_ms=duration_ms,
                         model_duration_ms=sum(call["duration_ms"] for call in self.calls) if self.calls else None,
                         first_chunk_ms=self.first_chunk_ms, active_turns=self.owner.active,
-                        **self.metadata(),
+                        **metadata,
                     )

@@ -10,7 +10,7 @@ from time import monotonic
 
 import httpx
 
-from chatbot.domain.market import MarketDataError
+from chatbot.domain.market import MarketData, MarketDataError
 from .history_stream import daily_closes
 
 KINDS = ('acciones', 'cedears', 'titulosPublicos', 'obligacionesNegociables', 'letras')
@@ -43,7 +43,7 @@ def market_value(value):
     return 'bCBA' if str(value).casefold() in ('1', 'bcba') else None
 
 
-class IolMarketData:
+class IolMarketData(MarketData):
     def __init__(self, username, password, *, client=None, timeout=8):
         self.username, self.password = username, password
         self.client = client or httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False)
