@@ -1,195 +1,379 @@
-# Agent Chatbot on Google Cloud
+# AI Finance Chatbot on Google Cloud
 
-A small learning project: FastAPI, PostgreSQL/Alembic, ports and adapters, async LangGraph, and a React + TypeScript + Vite + Tailwind chat UI. Username authentication uses Argon2id and revocable database sessions. Models can be simulated or OpenAI Responses. Google Cloud infrastructure and deployment are being added in guided iteration 04.
+An end-to-end AI finance chatbot combining asynchronous Python, tool-driven agent workflows, and infrastructure as code on Google Cloud. The project covers application development, database migrations, cloud provisioning, automated releases, and privacy-conscious LLM observability.
 
-## Start locally
+The assistant answers personal-finance questions, retrieves Argentine market data through IOL, and creates interactive historical-price charts. Responses stream to a React interface alongside live tool activity. Each user has a persistent private conversation, and new accounts require administrator approval before accessing the assistant.
 
-Requirements: Docker with Compose, Make, and Python 3 for the small local configuration/CLI helpers. Node and Python backend dependencies run inside Docker.
+| Layer | Technologies |
+| --- | --- |
+| Backend | Python 3.13, FastAPI, Uvicorn, async SQLAlchemy, asyncpg |
+| Agent | LangGraph, OpenAI Responses API, JSON Schema tool contracts, structured XML prompt |
+| Market data and presentation | IOL API, server-validated chart data, Recharts, streamed Markdown |
+| Frontend | React, TypeScript, Vite, Tailwind CSS |
+| Persistence | PostgreSQL 17, Alembic, PostgreSQL advisory locks |
+| Infrastructure | Terraform, Cloud Run, Cloud SQL, Artifact Registry, Secret Manager, Firebase Hosting |
+| Delivery and observability | Docker Compose, GitHub Actions, OIDC / Workload Identity Federation, Cloud Logging, Langfuse |
+
+## System architecture
+
+```mermaid
+flowchart LR
+    Browser["Browser · React chat"]
+
+    subgraph GCP["Google Cloud"]
+        Hosting["Firebase Hosting · static assets"]
+        API["Cloud Run service · FastAPI + LangGraph"]
+        SQL[("Cloud SQL · PostgreSQL")]
+        Secrets["Secret Manager"]
+        Logs["Cloud Logging"]
+        Job["Cloud Run job · Alembic"]
+        Registry["Artifact Registry · backend image"]
+    end
+
+    OpenAI["OpenAI · Responses API"]
+    IOL["IOL · market data API"]
+    Langfuse["Langfuse Cloud · traces and metrics"]
+
+    Browser -->|"Load HTML, JS and CSS"| Hosting
+    Browser <-->|"HTTPS · Bearer auth · SSE"| API
+    API <-->|"Async Python connector · IAM auth · encrypted public IP"| SQL
+    Secrets -.->|"Runtime secret injection"| API
+    API -->|"Model requests and streamed responses"| OpenAI
+    API -->|"Read-only quotes and history"| IOL
+    API -->|"Structured execution logs"| Logs
+    API -->|"Metrics exported in background"| Langfuse
+    Registry -.->|"Service image"| API
+    Registry -.->|"Migration image"| Job
+    Job -->|"Schema migrations · separate IAM identity"| SQL
+```
+
+Firebase Hosting delivers the compiled frontend. Once loaded, the browser calls Cloud Run directly for authentication, history, and streamed chat responses. The production API URL is a public frontend build input, and FastAPI validates the application session on protected endpoints.
+
+Locally, Docker Compose runs three services: a Vite development server, the Python backend, and PostgreSQL. The browser uses Vite's `/v1` proxy to reach the backend. Production uses Firebase for static hosting and Cloud Run for the API, with exact-origin CORS.
+
+## Backend architecture
+
+### Hexagonal boundaries
+
+The backend separates application decisions from external integrations using ports and adapters.
+
+| Component | Responsibility |
+| --- | --- |
+| `domain/` | Provider-independent messages, turns, events, errors, and market-data values |
+| `application/` | Authentication, turn orchestration, dependency contracts, and tool execution rules |
+| `adapters/inbound/http/` | FastAPI routes, request/response validation, authentication transport, and SSE framing |
+| `adapters/outbound/` | PostgreSQL, OpenAI, IOL, LangGraph execution, rate limiting, and Langfuse implementations |
+| `prompts/` | Packaged finance instructions, prompt validation, and profile-context construction |
+| `app.py` | Composition root and shared resource lifecycle |
+
+Ports describe what the application needs through Python `Protocol` interfaces. Concrete adapters explicitly declare the protocol they implement, making the dependency visible where the class is defined.
+
+```python
+class LangGraphAgent(AgentRunner):
+    ...
+
+class PostgresConversationRepository(ConversationRepository):
+    ...
+
+class LangfuseTracing(TurnTracing):
+    ...
+```
+
+`app.py` constructs the adapters once during FastAPI startup and injects them into the application. The turn orchestrator coordinates persistence, admission limits, conversation locks, agent execution, and cleanup through its ports. That boundary allows tests to substitute controlled implementations for database, model, and telemetry dependencies.
+
+### Async execution and concurrency
+
+Each backend container runs one Uvicorn worker with one event loop. The process shares its orchestrator, compiled graph, clients, and connection pools across requests. Each chat invocation owns its history, graph state, pending tool calls, and chart references.
+
+Model requests, IOL requests, and PostgreSQL operations use async clients. While a request awaits network I/O, the event loop can advance other requests. Password hashing runs in a bounded worker-thread path because it is CPU-intensive. Synchronous telemetry shutdown also runs off the event loop.
+
+Two limits apply at different levels. Cloud Run accepts up to eight concurrent HTTP requests per instance, while the application admits up to four active chat turns per process by default. Authentication, history, and health requests also use HTTP capacity. The application rejects excess chat turns promptly, and a shared PostgreSQL advisory lock prevents overlapping turns for the same user across tabs, processes, or deployment revisions.
+
+A turn follows this sequence.
+
+1. Validate the session, origin, request body, and per-user rate limit.
+2. Admit the turn, acquire its conversation lock, and persist the user message.
+3. Load the complete conversation history and start the graph with invocation-local state.
+4. Stream model text, tool activity, and chart blocks as execution progresses.
+5. Save the final assistant message, presentation blocks, provider transcript, and execution metadata.
+6. Close the turn observation and release the lock and active-turn slot, including on failure or cancellation.
+
+### LangGraph and the ReAct-style tool loop
+
+One compiled graph drives repeated model and tool rounds.
+
+```mermaid
+flowchart LR
+    Start([START]) --> Model["Model · decide next action"]
+    Model -->|"Tool calls requested"| Tools["Tools · validate and execute"]
+    Tools -->|"Append results"| Model
+    Model -->|"Final answer"| Finish([END])
+```
+
+The backend sends the model the registered tool names, descriptions, and JSON Schemas. OpenAI function calling returns a tool name and arguments. The graph validates that request, executes the async handler, and returns the result to the model. The model can request more tools before completing its response.
+
+Multiple tools can run within one turn, including repeated calls to the same tool. Handlers execute sequentially, with separate budgets for model calls, tool calls, graph recursion, and elapsed time. Model selection and reasoning effort are configuration values, currently `openai:gpt-6.1-terra` and `high` for the deployed environment. An offline simulated model supports local transport and persistence checks.
+
+Successful turns preserve the provider transcript needed to reconstruct subsequent model context. Loading that transcript preserves tool-call relationships while replaying saved history. Every saved conversation message is included in later turns, so context size and token consumption grow with the conversation.
+
+### Market tools and chart generation
+
+| Tool | Purpose |
+| --- | --- |
+| `search_instruments` | Resolve instrument names and symbols against the IOL catalog |
+| `get_quote` | Retrieve a quote with available currency, market, settlement, and timestamp information |
+| `get_price_history` | Retrieve bounded daily history and return a validated series reference |
+| `show_chart` | Build an absolute-price or base-100 chart from series retrieved during the current turn |
+
+The IOL adapter handles broker authentication, serialized token renewal, bounded caches, HTTP deadlines, and response normalization. Market access covers Argentine instruments available to the configured account, including local shares, CEDEARs, and bonds. Actual access and coverage depend on IOL account permissions.
+
+Chart points come from backend-owned market series. The model requests a chart using series references, and the application emits a typed chart block for React to render. The assistant can choose to show a chart when it helps explain a historical comparison. Completed messages persist their ordered text and chart blocks as snapshots, allowing history to display the same result after a reload.
+
+Histories contain unadjusted prices. A conservative comparability check rejects a halving or twofold increase between consecutive observations before generating a chart or period summary. That check can flag genuine extreme moves and cannot detect every corporate action. Base-100 comparisons describe relative prices and exclude coupons, dividends, and currency conversion.
+
+See the [market tools guide](doc/market-tools.md) for provider behavior, limits, and manual review examples.
+
+### Structured prompt and execution controls
+
+The finance prompt is packaged in [`finance.xml`](backend/src/chatbot/prompts/finance.xml), validated at startup, and identified in execution metadata by its content hash. XML sections define the role, financial scope, instructions, rules, output format, and examples.
+
+The instructions cover financial topic boundaries, source-backed market facts, ambiguous instruments, chart usage, and treating conversation/profile/tool content as reference data. The model receives the user's display name and a runtime date alongside its instructions and history.
+
+Application checks enforce the tool registry, argument schemas, ownership, chart-reference scope, and resource budgets. These checks complement the prompt's behavioral guardrails.
+
+| Default control | Value |
+| --- | --- |
+| Active chat turns per process | 4 |
+| Chat submissions per user | 20 per rolling minute |
+| Total turn deadline | 240 seconds |
+| Deadline per model call | 120 seconds |
+| Deadline per tool execution | 10 seconds |
+| Model calls per turn | 4 |
+| Tool calls per turn | 8 |
+| Graph recursion limit | 12 |
+| Maximum output tokens per model call | 8,192 |
+
+The OpenAI SDK has automatic retries disabled, so the application controls the execution budget. Partial streamed answers remain visibly incomplete and the database records the failed or cancelled turn. Completed assistant messages become canonical history after persistence succeeds.
+
+### Authentication and conversation ownership
+
+Users register with a display name, username, and password. FastAPI verifies Argon2id hashes and issues opaque Bearer session tokens. PostgreSQL stores a verifier for each token, with a default 24-hour absolute expiry. Logout revokes the current session, and blocking a user revokes their sessions.
+
+New registrations start blocked. An approved administrator can approve or block users through a minimal dashboard. Initial administrator promotion is an explicit database operation documented in the [user approval guide](doc/user-approval.md).
+
+The backend derives conversation ownership from the authenticated identity. Session and account validity are checked during active generation, and losing access or coordination stops the execution. The browser stores its token in per-tab `sessionStorage`.
+
+## Google Cloud infrastructure and delivery
+
+### Terraform layout and state
+
+Infrastructure lives in two independently applied Terraform roots.
+
+```text
+infra/
+├── bootstrap/                  # Create and protect the Terraform state bucket
+└── environments/
+    └── production/             # Application resources, IAM, and runtime configuration
+```
+
+The bootstrap root creates a private Cloud Storage bucket with object versioning and deletion protection in Terraform. After bootstrap, both roots use that bucket with separate state prefixes, `bootstrap` and `environments/production`. Remote state allows later Terraform operations to reconcile the same resources, while backend locking coordinates state updates.
+
+The production root groups resources by responsibility, including `cloud_run.tf`, `cloud_sql.tf`, `migrations.tf`, `registry.tf`, `secrets.tf`, `iam.tf`, `firebase.tf`, and `github_actions.tf`. It enables the required service APIs and declares the application infrastructure in the existing Google Cloud project.
+
+### Compute, storage, and identities
+
+| Resource | Current configuration and purpose |
+| --- | --- |
+| Cloud Run service | FastAPI backend in `us-central1`, second-generation execution, 1 vCPU, 512 MiB RAM, request-based billing, startup CPU boost |
+| Cloud Run scaling | Minimum zero and service-level maximum one instance, eight concurrent requests, 270-second request timeout |
+| Cloud SQL | PostgreSQL 17 Enterprise, `db-g1-small`, single zone, 10 GiB SSD, fixed storage allocation |
+| Artifact Registry | Regional Docker repository for backend images used by both the API and migration job |
+| Secret Manager | Versioned OpenAI, IOL, and Langfuse secrets injected into the backend |
+| Firebase Hosting | Static React assets, SPA routing, and cache policy |
+| Cloud Run job | Explicit Alembic execution using a separate migration identity |
+| Service accounts | Separate runtime, migration, and deployment identities with scoped permissions |
+| Workload Identity Federation | Short-lived GitHub OIDC access to the deployment identity |
+
+Cloud Run can scale to zero during inactivity and start again on the next request. That introduces cold-start latency. Cloud SQL remains active independently of backend traffic. The deployed database has deletion protection enabled; automatic backups and point-in-time recovery are currently disabled.
+
+### Passwordless database connections
+
+Local Compose uses `DATABASE_MODE=direct` with asyncpg against its PostgreSQL service. Cloud Run and the migration job use `DATABASE_MODE=cloud_sql` with the async Cloud SQL Python Connector.
+
+The cloud connector uses encrypted public-IP connections and automatic IAM database authentication under the attached service account. The instance requires a connector and has no authorized direct-access networks configured. Runtime and migration identities each have their own PostgreSQL IAM user.
+
+Google Cloud IAM permissions authorize connection and authentication. PostgreSQL grants separately authorize operations on schemas, tables, and sequences. The migration identity creates and upgrades the schema; the runtime identity receives the data access needed by the API. An explicit bootstrap helper configures these grants through an authorized administrator.
+
+SQLAlchemy uses bounded pools for ordinary database work and dedicated advisory-lock connections. Lazy connector refresh suits request-based Cloud Run execution. Alembic reuses the connection factory with its migration settings.
+
+See the [database IAM setup guide](doc/database-iam-setup.md) for the initialization sequence.
+
+### Configuration and secrets
+
+Terraform declares the secret containers, access grants, version references, and ordinary Cloud Run environment values. The operator adds secret payloads to Secret Manager outside Terraform, keeping those values out of Terraform state. Numeric version references make the injected secret version explicit.
+
+OpenAI and IOL credentials and the Langfuse secret key belong to the runtime backend. The Langfuse public key and base URL are ordinary configuration. The deployment identity publishes artifacts and updates the permitted service/job resources using short-lived federated credentials.
+
+The included project IDs, resource names, Firebase site, and OIDC repository/owner IDs describe the current deployment. Deploying a separate copy requires updating those identifiers, Terraform backend locations, and workflow configuration for the target project and repository.
+
+### GitHub Actions release flow
+
+```mermaid
+flowchart TD
+    Change["PR to main or push to main"] --> Backend["Backend tests · PostgreSQL + Alembic"]
+    Change --> Frontend["Frontend tests + production build"]
+    Change --> Terraform["Terraform format + validation"]
+    Backend --> Gate["Checks passed"]
+    Frontend --> Gate
+    Terraform --> Gate
+    Gate -->|"Push to main · select changed components"| Auth["GitHub OIDC → Google deployment identity"]
+    Auth --> BackChanged{"Backend changed?"}
+    BackChanged -->|Yes| Image["Build and push immutable backend image"]
+    Image --> Migration["Execute Alembic job"]
+    Migration --> Revision["Create revision without traffic"]
+    Revision --> Promote["Promote + readiness check"]
+    BackChanged -->|No| FrontChanged{"Frontend changed?"}
+    Promote --> FrontChanged
+    FrontChanged -->|Yes| Assets["Publish tested frontend build to Firebase"]
+    Assets --> Verify["Check assets and direct API / CORS"]
+    FrontChanged -->|No| Done["Release summary"]
+    Verify --> Done
+```
+
+Pull requests targeting `main` run backend tests against a PostgreSQL 17 service, frontend tests and a production build, and Terraform format/schema checks. Terraform validation runs without cloud credentials or remote-state access. Model and market-provider tests use controlled fixtures.
+
+Pushes to `main` deploy changed application components after checks pass. Backend changes build a Linux AMD64 image and push it to Artifact Registry. The release uses an immutable image digest for both the migration job and the service. Alembic upgrades the database first, then the workflow creates a backend revision without traffic, verifies the candidate, promotes it, and checks readiness.
+
+If promotion or readiness fails, the script attempts to restore traffic to the previous revision when the candidate still owns traffic. Schema downgrades and frontend release recovery require operator review. Migration changes therefore need compatibility with the previous application revision.
+
+Frontend changes publish the exact build artifact tested by that workflow run, followed by asset and API/CORS checks. A manual workflow dispatch selects both application components. Documentation-only changes run checks and skip application publication.
+
+OIDC trust is restricted to the configured numeric repository and owner IDs, the `main` branch, the deployment workflow path, and the permitted trigger types. Terraform manages resource configuration, and the release workflow manages image versions and explicit service traffic. Infrastructure changes are reviewed and applied separately.
+
+See the [GitHub Actions guide](doc/github-actions.md) for setup, permissions, and release verification.
+
+## Observability and privacy
+
+Cloud Logging receives structured execution records with safe identifiers, status, durations, model/tool call counts, and reported token usage. Health endpoints distinguish process liveness from database/schema readiness.
+
+Langfuse exports one `chat-turn` trace per started turn, with child observations for each model call and registered tool execution.
+
+| Observation | Recorded data |
+| --- | --- |
+| Turn | Request/turn IDs, environment, elapsed time, time to first text, final status, and token totals |
+| Model call | Model, reasoning effort, duration, time to first text when available, and reported input/output token counts |
+| Tool call | Registered tool name, duration, and completion/failure/cancellation status |
+
+Telemetry uses an explicit field allowlist. User messages, assistant responses, history, prompts, tool arguments/results, names, emails, and credentials stay outside the Langfuse export. Missing token usage remains unknown, with incomplete totals marked accordingly. Prompt content still follows the application's normal model request flow to OpenAI.
+
+The SDK batches exports in the background, and the backend attempts bounded cleanup at shutdown. Request-based Cloud Run can throttle CPU outside requests, so queued observations may be delayed or lost. Production traces use the `production` environment; local traces use `local`.
+
+## Run locally
+
+### Requirements and external integrations
+
+Install Docker with Compose, Make, and Python 3 for the configuration and CLI helpers. Backend dependencies and frontend build tools run inside the application containers.
+
+| Integration | What you need |
+| --- | --- |
+| Offline local mode | Docker services and the default simulated model |
+| OpenAI | An API project with available credits/quota and access to the configured model |
+| IOL | Broker credentials with API access to the required market-data endpoints |
+| Langfuse | A project, its public/secret key pair, and the project's regional base URL |
+| Google Cloud deployment | A billed project, Terraform, Google Cloud CLI, and Firebase CLI for operator setup |
+
+IOL and Langfuse can be configured independently. Local development uses the Compose database and its own chat accounts.
+
+### Start the application
 
 ```sh
+make env
+# Edit backend/.env to enable the integrations you want.
 make start
 make health
-make test
 ```
 
-Open [http://localhost:5173](http://localhost:5173) and create an account with name/username/password/repeated password. Accounts require administrator approval before login; see [user approval and first administrator setup](doc/user-approval.md). Passwords require 15–128 characters; usernames use 3–32 letters, digits, dots, underscores or hyphens. Reload to check history; logout/login to check session handling. The name is LLM profile context; the username identifies login.
+Open [localhost:5173](http://localhost:5173). Register a user and follow the [first administrator setup](doc/user-approval.md) to approve access. The API is available at [localhost:8088](http://localhost:8088), with interactive documentation at [localhost:8088/docs](http://localhost:8088/docs).
 
-`make start` initializes separate ignored env files, builds both images, starts PostgreSQL, explicitly migrates the schema, seeds optional development users, and starts backend/frontend. Migration/seed commands reuse the backend image; only the three normal application services remain running. Data survives ordinary restarts. A legacy root `.env` is moved into the new locations with its model key preserved; values are never printed.
+`make start` builds the images, starts PostgreSQL, applies Alembic migrations, seeds optional development identities, and starts the backend and frontend. The database volume preserves data across normal restarts. Tests create isolated databases inside that PostgreSQL service.
 
-API: [http://localhost:8088](http://localhost:8088). Interactive API documentation: [http://localhost:8088/docs](http://localhost:8088/docs).
+### Environment files
 
-If a local port is occupied, change `API_PORT` in `backend/.env` or `FRONTEND_PORT` in `frontend/.env`. When changing the frontend port, also update backend `APP_ORIGIN` to its exact browser URL and run `make start`.
+Compose receives `backend/.env` and `frontend/.env` explicitly. Examples are tracked in the repository; actual `.env` files are ignored.
 
-## Configuration by component and environment
-
-- `backend/.env` / `backend/.env.example`: authentication, session policy, model/key, database and local API/Compose configuration. The real file is ignored and excluded from the Docker build.
-- `frontend/.env` / `frontend/.env.example`: local frontend port. An empty `VITE_API_BASE_URL` uses the local Vite proxy; production builds set it to the public Cloud Run origin. Frontend configuration must never contain server secrets; any future `VITE_*` values are public build inputs.
-- Make passes both files explicitly to Compose; the root `.env` is no longer used.
-
-| Setting | Local development | Future staging/production |
-| --- | --- | --- |
-| `FRONTEND_PORT` | Local Vite port, default `5173` | Not used by Firebase Hosting |
-| `API_PORT` | Host mapping to backend container, default `8088` | Not used as a host port; Cloud Run routes to the container port (currently `8080`) |
-| `APP_ORIGIN` | Backend validates `http://localhost:5173` | Set the actual frontend HTTPS origin separately for each environment |
-| `APP_ENV` / `AUTH_MODE` | `local` / `session` | `production` / `session`; development identity is refused |
-| Session lifetime/auth limits | Defaults work; override only when needed | Configurable policy; no need to redeclare unchanged defaults |
-| Model/database credentials | Ignored backend env file | Secret Manager/runtime configuration, never frontend files |
-
-Production configuration rejects an HTTP origin or development identity. Cloud resources and deployment configuration are not provisioned by this iteration.
-
-### PostgreSQL local and Cloud SQL connections
-
-Compose explicitly sets `DATABASE_MODE=direct` and supplies the URL of its local `db` service. Local startup, migrations, and tests do not discover Google credentials, even when your host terminal has personal or work ADC variables. Do not mount Google credential files into local Compose.
-
-The cloud connection adapter is prepared for the following **Cloud Run/job settings**, not for the local `.env`:
-
-```dotenv
-DATABASE_MODE=cloud_sql
-CLOUD_SQL_INSTANCE=wencho8-chatbot-prod:us-central1:chatbot-postgres
-DATABASE_NAME=chatbot
-DATABASE_USER=chatbot-runtime@wencho8-chatbot-prod.iam
-DATABASE_POOL_SIZE=6
-DATABASE_CONNECT_TIMEOUT_SECONDS=10
-```
-
-Do not also set `DATABASE_URL` in cloud mode. The Python connector uses the public-IP path, encrypted connections, and automatic IAM database authentication under the workload's attached service account; no database password or downloaded service-account key is required. The migration job will use `chatbot-migrations@wencho8-chatbot-prod.iam` instead. PostgreSQL IAM users and table/schema grants are separate from the connector's IAM permissions; database grants and the first cloud migration remain pending.
-
-The API creates one async connector on the current event loop, with lazy credential/certificate refresh for request-based Cloud Run. SQLAlchemy's ordinary and advisory-lock pools share it. At the defaults there are at most six ordinary connections plus four dedicated lock connections per process, with no overflow; deployment revisions can overlap and a migration job adds its own connection. Configure pool capacity with `DATABASE_POOL_SIZE`; lock capacity follows `MAX_ACTIVE_TURNS`. Shutdown disposes both pools before closing the connector. Cloud connection failures never fall back to local PostgreSQL.
-
-Initial cloud SQL permissions are configured separately through a personal IAM administrator, without setting a `postgres` password or giving the app administrative privileges. See the [passwordless PostgreSQL setup guide](doc/database-iam-setup.md). Its operator helper previews SQL by default and requires explicit `--apply` to connect; it is not part of API startup or automatic Terraform execution.
-
-Alembic uses the same connection factory with one non-pooled connection and no API five-second statement timeout. It reads only database settings, so it does not require an OpenAI key, model selection, or web session configuration. API startup does not run migrations. Local seeds refuse cloud mode. No new schema migration is needed for this connection-only change. By user decision, shared rate limits are deferred for the initial personal cloud trial; existing bounded memory limits reset on restart and are independent across overlapping deployment revisions. PostgreSQL conversation locks remain shared.
-
-## Commands
-
-| Command | Action |
-| --- | --- |
-| `make start` | Build/start frontend, backend and PostgreSQL, including migrations |
-| `make build` | Build frontend and backend images |
-| `make stop` | Stop/remove service containers; keep the database volume |
-| `make status` | Show service status |
-| `make logs` | Follow frontend/backend logs |
-| `make migrate` | Explicitly upgrade the database schema; PostgreSQL must be running |
-| `make seed` | Ensure the local users exist; PostgreSQL must be running |
-| `make login` / `make logout` | Interactive CLI login / server-side revocation of its session |
-| `make chat MESSAGE='Hello'` | Send a message using your CLI session and print SSE |
-| `make history` | Read history for the CLI session's user |
-| `make test` | Backend/frontend tests and frontend typecheck/production build |
-| `make backend-test` / `make frontend-test` | Run one component's tests |
-| `make frontend-build` | Typecheck and build static assets in `frontend/dist` inside the container |
-
-## CLI sessions and API
-
-```sh
-make login  # Prompts for credentials of an account created in the UI
-make chat MESSAGE='How can I organize my expenses?'
-make history
-make logout
-```
-
-Events: `started`, one or more `delta` events, then `completed` after the final response is committed. A failure after streaming starts produces `error`; HTTP 200 alone does not mean the turn succeeded. Failures before streaming use HTTP error statuses.
-
-The CLI keeps a private, ignored `.local/session.json` token file (0600); passwords are prompted, not passed in command arguments. Browser and CLI login sessions are independent. Auth endpoints are `/v1/auth/register`, `/login`, `/session`, `/logout`. Login returns an opaque session token, sent using `Authorization: Bearer`. Mutations require the exact configured Origin and JSON. Cookies and browser CSRF headers are no longer used.
-
-`GET /v1/chat/messages` reads only the session user's history. Request bodies cannot select ownership. Every saved message is passed to the graph on subsequent turns. Session mode never falls back to development headers.
-
-## Use OpenAI
-
-The default provider is `simulated`: no key or model spending is needed. This mode checks streaming/history; it does not enforce the finance prompt semantically.
-
-When ready, edit the **untracked** `backend/.env` locally:
+The backend's optional external-service configuration follows this shape.
 
 ```dotenv
 MODEL=openai:gpt-6.1-terra
-OPENAI_API_KEY=your-key-here
-MODEL_MAX_OUTPUT_TOKENS=2048
+MODEL_REASONING_EFFORT=high
+OPENAI_API_KEY=<your-openai-api-key>
+
+MARKET_DATA_PROVIDER=iol
+IOL_CREDENTIALS='{"username":"<iol-username>","password":"<iol-password>"}'
+
+LANGFUSE_PUBLIC_KEY=<your-langfuse-public-key>
+LANGFUSE_SECRET_KEY=<your-langfuse-secret-key>
+LANGFUSE_BASE_URL=https://us.cloud.langfuse.com
 ```
 
-Run `make start` to apply the configuration, then try:
+Use the base URL shown by the Langfuse project. Single-quote the IOL JSON in the env file to preserve special characters in credentials. The complete backend defaults, including database, port, auth, and execution settings, are in [`backend/.env.example`](backend/.env.example). `MODEL=simulated` and `MARKET_DATA_PROVIDER=disabled` support offline development; Langfuse exports activate when all three Langfuse values are supplied.
 
-```sh
-make chat MESSAGE='How can I build an emergency fund?'
-make chat MESSAGE='What is my name?'
-make chat MESSAGE='Who won the football match?'
-make chat MESSAGE='Help me budget for football tickets'
-make history
+The frontend needs public build/development values.
+
+```dotenv
+FRONTEND_PORT=5173
+VITE_API_BASE_URL=
 ```
 
-`MODEL` selects both provider and model: `simulated` for offline development or `openai:<model-id>` for a model available to your API project. The shorthand `MODEL=openai` selects `openai:gpt-6.1-terra`. Other non-empty model IDs are accepted without a code change; unsupported providers or empty IDs fail configuration validation. There is no automatic fallback after a provider error. Missing keys fail startup; model access, quotas, and prompt behavior are checked only when you send a real message. Startup, readiness, and `make test` make **no paid model requests**.
+An empty `VITE_API_BASE_URL` uses Vite's local proxy. Production builds set it to the Cloud Run HTTPS origin. The backend's `APP_ORIGIN` must match the browser's exact origin, including its local port. Rebuild/restart the relevant containers after changing environment values.
 
-`MODEL` and `MODEL_MAX_OUTPUT_TOKENS` are normal configuration. `OPENAI_API_KEY` is a secret. Apply env changes with `make start`. Automated tests always select simulated/mocked providers. To manually test the UI without model spending while keeping your saved provider settings, use `MODEL=simulated make start`; a normal `make start` restores the saved selection.
+### Commands and tests
 
-The XML lives in `backend/src/chatbot/prompts/finance.xml`. It is loaded from the installed package and validated at startup. Instructions are sent separately from the user's display name and conversation. No financial profile or memory is inferred. The normal tool registry is empty, and OpenAI receives no tool definitions or hosted tools.
+| Command | Action |
+| --- | --- |
+| `make start` | Build, migrate, seed, and start the local stack |
+| `make build` | Build the application images |
+| `make stop` | Stop the stack and retain the database volume |
+| `make status` / `make logs` | Inspect services or follow their logs |
+| `make migrate` | Upgrade the local schema explicitly |
+| `make test` | Run backend/frontend tests and the frontend production build |
+| `make backend-test` / `make frontend-test` | Run one component's tests |
+| `make frontend-build` | Typecheck and build frontend assets |
+| `make login` / `make logout` | Manage a separate CLI session |
+| `make chat MESSAGE='Compare AL30 and GD30 over the last month'` | Stream a chat turn through the CLI |
+| `make history` | Read the CLI user's saved conversation |
 
-`completed` includes provider/model, the prompt hash, actual call counts, and reported token usage. Missing usage stays unknown. A provider error after streaming starts is an SSE `error`, even if earlier deltas were shown. Partial answers never enter canonical assistant history.
+Tests cover authentication and ownership, real PostgreSQL locks and migrations, model streaming, repeated tools, chart snapshots, cancellation, telemetry privacy, and deployment helpers with mocked cloud commands. Health checks and automated provider tests use offline fixtures; live provider access is exercised through explicit chat requests.
 
-## Sessions and development identity
+## Frontend and streamed presentation
 
-Normal mode is `AUTH_MODE=session`: Argon2id password verification, a 24-hour absolute session by default, and an opaque Bearer session token with only its verifier stored in PostgreSQL. Logout revokes that session on the server; other devices' sessions remain valid. Session validity is checked during generation on the existing 0.5-second watchdog with a bounded two-second database check. Detection includes scheduling/I/O delay; upstream cancellation is not instantaneous. Password work runs off the event loop with at most two admitted operations.
+The React and TypeScript frontend uses Tailwind for authentication, the chat, and the administrator dashboard. A single streamed POST response carries `started`, `delta`, `tool_status`, `chart`, and terminal `completed` or `error` events. A successful HTTP status alone does not establish that the turn completed.
 
-Login is limited to 10 attempts per minute per IP and username; registration to 5 per minute per IP. Limits are process-local and reset on restart. The local frontend proxy shares one source IP, so those IP limits are shared by local browser clients. Forwarded IP headers are not trusted; proxy clients may also share an IP limit in the cloud. Review trusted forwarding during deployment. Shared limits are deferred for this personal trial. Recovery/MFA/password changes and automatic expired-session cleanup are deferred.
+The UI incrementally renders Markdown and structured chart blocks. Live tool activity appears in a collapsible panel with progress indicators between model/tool rounds. The composer is disabled while a turn runs. Reloading restores persisted messages and chart snapshots. Markdown supports lists, tables, emphasis, and code blocks, with escaped user text and restricted HTML/image rendering.
 
-For explicit local-only development, set `AUTH_MODE=development` in `backend/.env`, restart, then use `make chat/history DEV_USER=alice` or `bob`. The browser registration/chat flow requires session mode. `X-Dev-User-Id` accepts these optional fixtures or a known UUID:
+Vite produces static assets for Firebase Hosting. Production auth/history/SSE requests go directly from the browser to Cloud Run. The static hosting path and API stream have separate caching policies; private API responses use `Cache-Control: no-store`.
 
-- Alice: `11111111-1111-4111-8111-111111111111`
-- Bob: `22222222-2222-4222-8222-222222222222`
+See the [direct API guide](doc/direct-api.md) for the frontend/backend connection setup.
 
-**This header is not authentication.** The development adapter deliberately lets you act as fixture users and refuses production configuration. Fixtures have no default passwords; registered users receive new UUIDs and do not inherit fixture histories. APIs bind only to localhost; PostgreSQL has no published host port. Firebase Hosting is the future static frontend host; authentication remains in Python.
+## Specification-driven development
 
-## Structure
+The project uses specification-driven development (SDD) to define decisions, contracts, limits, and acceptance criteria before implementing each iteration. [`doc/definitions.md`](doc/definitions.md) records project-wide decisions, and `specs/` captures the scope of individual deliveries. Specifications evolve as implementation and operational testing clarify the design.
 
-```text
-backend/src/chatbot/
-├── app.py                       # Composition and resource lifecycle
-├── config.py                    # Validated environment configuration
-├── domain/                      # Plain messages, turns, events, errors
-├── application/                 # Ports, auth/turn orchestration, tool registry
-├── prompts/                     # Packaged finance.xml and validation/loader
-└── adapters/
-    ├── inbound/http/            # Routes, API schemas, SSE framing
-    └── outbound/
-        ├── postgres/            # Tables, auth/chat repositories, locks, local seed
-        ├── agent/               # Async LangGraph model/tools loop
-        ├── models/              # OpenAI, simulated model, provider factory
-        ├── identity/            # Bounded Argon2 operations, development identity
-        └── rate_limit/          # Local rolling-window limiter
-```
+| Iteration | Scope |
+| --- | --- |
+| [01 — Backend setup](specs/01-initial-backend-setup.md) | FastAPI, ports/adapters, PostgreSQL, Alembic, Compose, streaming, and coordination |
+| [02 — OpenAI finance agent](specs/02-openai-finance-agent.md) | Async model adapter, LangGraph execution, prompt, usage, and execution budgets |
+| [03 — Users and chat UI](specs/03-users-and-chat-ui.md) | Registration, sessions, ownership, and the React interface |
+| [04 — Google Cloud backend](specs/04-guided-google-cloud-deployment.md) | Terraform bootstrap, IAM, Cloud SQL, migrations, and Cloud Run |
+| [05 — Firebase Hosting](specs/05-firebase-hosting.md) | Static frontend publication and browser integration |
+| [06 — GitHub Actions](specs/06-github-actions.md) | Tests, OIDC authentication, automated releases, and backend traffic rollback |
+| [07 — Market tools and charts](specs/07-market-tools-and-charts.md) | IOL integration, tool iterations, interactive charts, and live activity |
+| [08 — Langfuse observability](specs/08-langfuse-observability.md) | Per-turn/model/tool metrics and privacy-aware trace export |
 
-`app.py` connects implementations and closes the shared async model client at shutdown. The orchestrator consumes ports and never imports FastAPI, SQLAlchemy, or LangGraph. The compiled graph is shared, but invocation state is isolated. Its shape is `START -> model -> END`, with a conditional `model -> tools -> model` loop ready for future tools. Tools execute sequentially after name/schema validation; test handlers exist only in tests.
+Operational guides in `doc/` cover [request flow](doc/request-flow.md), [database initialization](doc/database-iam-setup.md), [account approval](doc/user-approval.md), [market data](doc/market-tools.md), and [deployment](doc/github-actions.md).
 
-One OpenAI adapter call performs one Responses request. LangGraph owns repeated model/tool rounds. Successful turns preserve an ordered provider transcript alongside canonical user/assistant text, including tool IDs and opaque continuation items. Loading history replays those items as model context without executing historical handlers or duplicating assistant text. Requests send full history with `store=false` and no provider-side conversation ID. This setting does not describe all provider retention policies.
+## Current operating boundaries
 
-The React/Tailwind UI lives in `frontend/src/{auth,chat,api}`. Vite proxies `/v1` to the backend locally; `npm run build` creates static assets without a production Vite server. Assistant messages render Markdown during streaming and from history, including emphasis, lists, code, and tables. Raw HTML and images are disabled; links retain safe URL handling. User messages remain escaped text. The browser keeps its token in `sessionStorage` (per-tab, reload-safe), clearing it on logout/expiration. Firebase serves static files only; production API/SSE calls go directly to Cloud Run using exact-origin CORS. Private API responses use `Cache-Control: no-store`. See [direct API deployment](doc/direct-api.md).
+The deployed environment is `production`. Staging is a future extension using separate configuration, state, data, and secrets. The current footprint favors a single backend instance and a single-zone database.
 
-Alembic migrations live in `backend/migrations/`, including `0003_auth_sessions`. Python 3.13 dependencies are managed by uv; frontend dependencies use Node 24 and `package-lock.json`. Tests are included in these development images; production images and cloud configuration come later.
-
-## Controls and limitations
-
-- Four active turns per process by default; additional submissions receive HTTP 503.
-- PostgreSQL advisory locks are keyed by user so even overlapping first messages are protected. A busy conversation receives HTTP 409. Dedicated lock connections remain outside long-running database transactions.
-- The lock is checked during generation, and graph tasks are cancelled before releasing it. A lost database connection aborts the execution when detected; detection is not instantaneous, so future tools with side effects will need their own idempotency/fencing design.
-- Rate limit: 20 submissions per user per rolling minute, including rejected busy/saturated submissions. It resets on restart and is independent across overlapping deployment revisions; shared enforcement is explicitly deferred for the personal cloud trial.
-- Defaults: total turn deadline 30 seconds, each model request 20 seconds, each future tool 5 seconds, at most 4 model calls, 8 tool calls, and graph recursion limit 12. Each OpenAI response allows at most 2048 output tokens, including reasoning tokens where applicable. SDK retries are disabled. Values are configurable; history is never silently truncated.
-- Existing component env files are preserved by `make start`. If your backend settings came from iteration 01, update `MAX_MODEL_CALLS=4` and `GRAPH_RECURSION_LIMIT=12` to adopt the newer defaults.
-- Complete assistant messages are persisted; partial streamed chunks are not. The user message and failed/cancelled turn remain recorded.
-- A hard process crash can leave an `in_progress` record; automatic recovery and idempotent request retries are deferred. Retrying a message can create another turn.
-- Logs include safe execution identifiers, provider/model, status, timings, call counts, request IDs, and actual token usage where reported. Prompts, profile names, tool payloads, API keys, and opaque reasoning items are not logged. Simulated usage is unavailable.
-- Tests create/drop uniquely named databases in the **same PostgreSQL container**, with Alembic migrations. They do not truncate local chat data or create test containers. The local PostgreSQL role has the database-creation permission needed by these tests.
-- Provider tests run the real async OpenAI SDK over mocked HTTP/SSE streams. They verify protocol handling, failures, cancellation, and continuation; they do not prove live model availability or finance-scope compliance.
-
-## Specifications
-
-GitHub Actions configuration is prepared in `.github/workflows/ci-deploy.yml`: PRs targeting `main` run backend/frontend tests and Terraform checks; pushes to `main` also deploy changed components after passing checks. Activation needs the dedicated deploy IAM/OIDC configuration and the non-secret repository variable described in [setup and review](doc/github-actions.md). No cloud activation is implied by the local files. Backend rollback restores traffic only; schema downgrades and frontend rollback remain manual.
-
-- [Project definitions](doc/definitions.md)
-- [Iteration 01](specs/01-initial-backend-setup.md)
-- [Iteration 02](specs/02-openai-finance-agent.md)
-- [Iteration 03](specs/03-users-and-chat-ui.md)
-- [Iteration 04 — Guided Google Cloud Backend Deployment (complete)](specs/04-guided-google-cloud-deployment.md)
-- [Iteration 05 — Firebase Hosting (functionally complete; operational follow-ups pending)](specs/05-firebase-hosting.md)
-- [Iteration 06 — GitHub Actions (implementation prepared; activation pending)](specs/06-github-actions.md)
-- [Short request/concurrency flow](doc/request-flow.md)
-
-## Market tools and charts (iteration 07)
-
-IOL provides read-only Argentine instrument search, quotes and daily history; the agent can show inline Recharts comparisons automatically. Local credentials belong only in the ignored backend env. Run `make start` to rebuild and apply migration 0005, then review the examples in [market tools](doc/market-tools.md). Model/effort and broker configuration are independent. No fake fallback or trading tools are enabled. See [spec 07](specs/07-market-tools-and-charts.md).
+Chat and authentication rate limits are process-local and reset on restart. Conversation locks use PostgreSQL and remain shared across overlapping deployment revisions. Full history is retained in model context, and a hard process crash can leave an in-progress turn requiring review. Automatic request deduplication, database recovery workflows, and image-retention cleanup are outside the current implementation.
